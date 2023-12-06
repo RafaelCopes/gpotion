@@ -33,20 +33,20 @@ defmodule Gaussian.Fan2 do
 end
 
 # gera matrix diagonalmente dominante a e vetor resultante b
-#defmodule MatrixGenerator do
-#  def generate(size) do
-#    a = for i <- 0..(size - 1), into: [] do
-#      for j <- 0..(size - 1), into: [] do
-#        if i == j, do: size * 10, else: Enum.random(1..9)
-#      end
-#    end
-#    |> List.flatten()
-#
-#    b = Enum.to_list(1..size)
-#
-#    {a, b}
-#  end
-#end
+defmodule MatrixGenerator do
+  def generate(size) do
+    a = for i <- 0..(size - 1), into: [] do
+      for j <- 0..(size - 1), into: [] do
+        if i == j, do: size * 10, else: Enum.random(1..9)
+      end
+    end
+    |> List.flatten()
+
+    b = Enum.to_list(1..size)
+
+    {a, b}
+  end
+end
 
 # matrix print para debug
 defmodule MatrixPrinter do
@@ -119,7 +119,7 @@ end
 max_block_size = 512
 block_size_xy = 4
 
-#size=100
+#size=500
 #{a_matrix, b_vector} = MatrixGenerator.generate(size)
 
 #valores fixos por enquanto
