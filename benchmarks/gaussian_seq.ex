@@ -53,18 +53,14 @@ defmodule Gaussian.Seq do
   end
 end
 
-# gera matrix diagonalmente dominante a e vetor resultante b
+# gera matrix diagonalmente dominante a
 defmodule MatrixGenerator do
   def generate(size) do
-    a = for i <- 0..(size - 1), into: [] do
+    for i <- 0..(size - 1), into: [] do
       for j <- 0..(size - 1), into: [] do
         if i == j, do: size * 10, else: Enum.random(1..9)
       end
     end
-
-    b = Enum.to_list(1..size)
-
-    {a, b}
   end
 end
 
