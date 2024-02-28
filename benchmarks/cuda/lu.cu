@@ -3,12 +3,12 @@
 #include <cuda_runtime.h>
 #include <time.h>
 
-#define BLOCK_SIZE 16 // Assuming a reasonable block size for the GPU
+#define BLOCK_SIZE 16
 
 __global__ void lu_kernel1(float *A, int n, int k) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i > k && i < n) {
-        A[i * n + k] /= A[k * n + k];  // Convert to L matrix multiplier
+        A[i * n + k] /= A[k * n + k];
     }
 }
 
@@ -16,7 +16,7 @@ __global__ void lu_kernel2(float *A, int n, int k) {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (i > k && j > k && i < n && j < n) {
-        A[i * n + j] -= A[i * n + k] * A[k * n + j];  // Update the trailing submatrix
+        A[i * n + j] -= A[i * n + k] * A[k * n + j];
     }
 }
 
@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
     }
 
     int n = atoi(argv[1]);
-    // Dynamically allocate memory for A using malloc
+   
     float *A = (float *)malloc(n * n * sizeof(float));
     if (A == NULL) {
         printf("Memory allocation failed\n");

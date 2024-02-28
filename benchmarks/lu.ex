@@ -1,7 +1,6 @@
 # fatoração LU sem pivotamento
 # usar somente matrizes diagonalmente dominantes
 
-# kernel fan1
 defmodule LU.Kernel1 do
   import GPotion
 
@@ -14,7 +13,6 @@ defmodule LU.Kernel1 do
   end
 end
     
-# kernel fan2
 defmodule LU.Kernel2 do
   import GPotion
 
