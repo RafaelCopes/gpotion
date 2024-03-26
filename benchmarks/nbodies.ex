@@ -143,5 +143,6 @@ next = System.monotonic_time()
 IO.puts "Elixir\t#{user_value}\t#{System.convert_time_unit(next-prev,:native,:millisecond)}"
 
 IO.inspect cpu_resp
+IO.inspect gpu_resp
 
-NBodies.check_equality(nBodies,cpu_resp,gpu_resp)
+IO.inspect NBodies.check_equality(nBodies,cpu_resp,gpu_resp)

@@ -12,7 +12,7 @@ defmodule LU.Kernel1 do
     end
   end
 end
-    
+
 defmodule LU.Kernel2 do
   import GPotion
 
@@ -82,18 +82,18 @@ dim_block_2 = {block_size, block_size, 1}
 dim_grid_2 = {div(size + block_size - 1, block_size), div(size + block_size - 1, block_size), 1}
 
 # chamada dos kernels
-Enum.each(0..(size - 1), fn k -> 
+Enum.each(0..(size - 1), fn k ->
   GPotion.spawn(kernel1, dim_grid_1, dim_block_1, [d_a, size, k])
   GPotion.synchronize()
   GPotion.spawn(kernel2, dim_grid_2, dim_block_2, [d_a, size, k])
   GPotion.synchronize()
 end)
 
-_a = GPotion.get_gmatrex(d_a)
+a = GPotion.get_gmatrex(d_a)
 
 next = System.monotonic_time()
 
-#IO.puts("Solution Matrix:")
-#MatrixPrinter.print_matrex(a, size)
+IO.puts("Solution Matrix:")
+MatrixPrinter.print_matrex(a, size)
 
 IO.puts "GPotion\t#{size}\t#{System.convert_time_unit(next-prev,:native,:millisecond)}"

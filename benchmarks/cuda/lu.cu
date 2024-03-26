@@ -75,10 +75,18 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    initializeArray(A, n);
+    A[0] = 30.00;  
+    A[1] =2.00;
+    A[2] =1.00;
+    A[3] =4.00;
+    A[4] =30.00;
+    A[5] =3.00;
+    A[6] =4.00;
+    A[7] =6.00;
+    A[8] =30.00;
 
-    //printf("A Matrix:\n");
-    //printArray(A, n);
+    printf("A Matrix:\n");
+    printArray(A, n);
 
     float time;
     cudaEvent_t start, stop;
@@ -92,8 +100,8 @@ int main(int argc, char *argv[]) {
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&time, start, stop);
 
-    //printf("Solution Matrix:\n");
-    //printArray(A, n);
+    printf("Solution Matrix:\n");
+    printArray(A, n);
 
     printf("CUDA\t%d\t%3.1f\n", n, time);
 
