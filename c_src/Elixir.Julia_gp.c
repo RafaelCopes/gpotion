@@ -11,49 +11,36 @@ void julia_kernel(float *ptr, int dim, struct dim3 gridDim,
   struct dim3 blockIdx;
   struct dim3 threadIdx;
 
-  for (blockIdx.z = 0; blockIdx.z < gridDim.z; ++blockIdx.z) {
+  for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+    for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
-    for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
-
-      for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
-
-        for (threadIdx.z = 0; threadIdx.z < blockDim.z; ++threadIdx.z) {
-
-          for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
-
-            for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
-
-              int x = blockIdx.x;
-              int y = blockIdx.y;
-              int offset = (x + (y * dim));
-              int juliaValue = 1;
-              float scale = 0.1;
-              float jx = ((scale * (dim - x)) / dim);
-              float jy = ((scale * (dim - y)) / dim);
-              float cr = (-0.8);
-              float ci = 0.156;
-              float ar = jx;
-              float ai = jy;
-              for (int i = 0; i < 200; i++) {
-                float nar = (((ar * ar) - (ai * ai)) + cr);
-                float nai = (((ai * ar) + (ar * ai)) + ci);
-                if ((((nar * nar) + (nai * nai)) > 1000)) {
-                  juliaValue = 0;
-                  break;
-                }
-
-                ar = nar;
-                ai = nai;
-              }
-
-              ptr[((offset * 4) + 0)] = (255 * juliaValue);
-              ptr[((offset * 4) + 1)] = 0;
-              ptr[((offset * 4) + 2)] = 0;
-              ptr[((offset * 4) + 3)] = 255;
-            }
-          }
+      int x = blockIdx.x;
+      int y = blockIdx.y;
+      int offset = (x + (y * dim));
+      int juliaValue = 1;
+      float scale = 0.1;
+      float jx = ((scale * (dim - x)) / dim);
+      float jy = ((scale * (dim - y)) / dim);
+      float cr = (-0.8);
+      float ci = 0.156;
+      float ar = jx;
+      float ai = jy;
+      for (int i = 0; i < 200; i++) {
+        float nar = (((ar * ar) - (ai * ai)) + cr);
+        float nai = (((ai * ar) + (ar * ai)) + ci);
+        if ((((nar * nar) + (nai * nai)) > 1000)) {
+          juliaValue = 0;
+          break;
         }
+
+        ar = nar;
+        ai = nai;
       }
+
+      ptr[((offset * 4) + 0)] = (255 * juliaValue);
+      ptr[((offset * 4) + 1)] = 0;
+      ptr[((offset * 4) + 2)] = 0;
+      ptr[((offset * 4) + 3)] = 255;
     }
   }
 }

@@ -11,46 +11,33 @@ void dot_product(float *ref4, float *a, float *b, int n, struct dim3 gridDim,
   struct dim3 blockIdx;
   struct dim3 threadIdx;
 
-  for (blockIdx.z = 0; blockIdx.z < gridDim.z; ++blockIdx.z) {
+  for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
-    for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+    for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-      for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
+      float cache[256];
+      int tid = (threadIdx.x + (blockIdx.x * blockDim.x));
+      int cacheIndex = threadIdx.x;
+      float temp = 0.0;
+      while ((tid < n)) {
+        temp = ((a[tid] * b[tid]) + temp);
+        tid = ((blockDim.x * gridDim.x) + tid);
+      }
+      cache[cacheIndex] = temp;
+      // sync the fucking threads motherfucker
 
-        for (threadIdx.z = 0; threadIdx.z < blockDim.z; ++threadIdx.z) {
-
-          for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
-
-            for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
-
-              float cache[256];
-              int tid = (threadIdx.x + (blockIdx.x * blockDim.x));
-              int cacheIndex = threadIdx.x;
-              float temp = 0.0;
-              while ((tid < n)) {
-                temp = ((a[tid] * b[tid]) + temp);
-                tid = ((blockDim.x * gridDim.x) + tid);
-              }
-              cache[cacheIndex] = temp;
-              // sync the fucking threads motherfucker
-
-              int i = (blockDim.x / 2);
-              while ((i != 0)) {
-                if ((cacheIndex < i)) {
-                  cache[cacheIndex] =
-                      (cache[(cacheIndex + i)] + cache[cacheIndex]);
-                }
-
-                // sync the fucking threads motherfucker
-
-                i = (i / 2);
-              }
-              if ((cacheIndex == 0)) {
-                ref4[blockIdx.x] = cache[0];
-              }
-            }
-          }
+      int i = (blockDim.x / 2);
+      while ((i != 0)) {
+        if ((cacheIndex < i)) {
+          cache[cacheIndex] = (cache[(cacheIndex + i)] + cache[cacheIndex]);
         }
+
+        // sync the fucking threads motherfucker
+
+        i = (i / 2);
+      }
+      if ((cacheIndex == 0)) {
+        ref4[blockIdx.x] = cache[0];
       }
     }
   }

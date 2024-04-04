@@ -11,29 +11,17 @@ void fan1(float *m, float *a, int size, int t, struct dim3 gridDim,
   struct dim3 blockIdx;
   struct dim3 threadIdx;
 
-  for (blockIdx.z = 0; blockIdx.z < gridDim.z; ++blockIdx.z) {
+  for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
-    for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+    for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-      for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
-
-        for (threadIdx.z = 0; threadIdx.z < blockDim.z; ++threadIdx.z) {
-
-          for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
-
-            for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
-
-              int idx = (threadIdx.x + (blockIdx.x * blockDim.x));
-              if ((idx >= ((size - 1) - t))) {
-                continue;
-              }
-
-              m[((size * ((idx + t) + 1)) + t)] =
-                  (a[((size * ((idx + t) + 1)) + t)] / a[((size * t) + t)]);
-            }
-          }
-        }
+      int idx = (threadIdx.x + (blockIdx.x * blockDim.x));
+      if ((idx >= ((size - 1) - t))) {
+        continue;
       }
+
+      m[((size * ((idx + t) + 1)) + t)] =
+          (a[((size * ((idx + t) + 1)) + t)] / a[((size * t) + t)]);
     }
   }
 }

@@ -11,34 +11,25 @@ void fan2(float *m, float *a, float *b, int size, int t, struct dim3 gridDim,
   struct dim3 blockIdx;
   struct dim3 threadIdx;
 
-  for (blockIdx.z = 0; blockIdx.z < gridDim.z; ++blockIdx.z) {
+  for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+    for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
-    for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+      for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
+        for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-      for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
+          int xidx = ((blockIdx.x * blockDim.x) + threadIdx.x);
+          int yidx = ((blockIdx.y * blockDim.y) + threadIdx.y);
+          if (((xidx >= ((size - 1) - t)) || (yidx >= (size - t)))) {
+            continue;
+          }
 
-        for (threadIdx.z = 0; threadIdx.z < blockDim.z; ++threadIdx.z) {
-
-          for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
-
-            for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
-
-              int xidx = ((blockIdx.x * blockDim.x) + threadIdx.x);
-              int yidx = ((blockIdx.y * blockDim.y) + threadIdx.y);
-              if (((xidx >= ((size - 1) - t)) || (yidx >= (size - t)))) {
-                continue;
-              }
-
-              a[(((size * ((xidx + t) + 1)) + yidx) + t)] =
-                  (a[(((size * ((xidx + t) + 1)) + yidx) + t)] -
-                   (m[((size * ((xidx + t) + 1)) + t)] *
-                    a[(((size * t) + yidx) + t)]));
-              if ((yidx == 0)) {
-                b[((xidx + t) + 1)] =
-                    (b[((xidx + t) + 1)] -
-                     (m[((size * ((xidx + t) + 1)) + t)] * b[t]));
-              }
-            }
+          a[(((size * ((xidx + t) + 1)) + yidx) + t)] =
+              (a[(((size * ((xidx + t) + 1)) + yidx) + t)] -
+               (m[((size * ((xidx + t) + 1)) + t)] *
+                a[(((size * t) + yidx) + t)]));
+          if ((yidx == 0)) {
+            b[((xidx + t) + 1)] = (b[((xidx + t) + 1)] -
+                                   (m[((size * ((xidx + t) + 1)) + t)] * b[t]));
           }
         }
       }
