@@ -1,46 +1,121 @@
 #include "erl_nif.h"
+#include <pthread.h>
 
-struct dim3 {
+typedef struct dim3 {
   int x;
   int y;
   int z;
-};
+} Dim3;
 
-void dot_product(float *ref4, float *a, float *b, int n, struct dim3 gridDim,
-                 struct dim3 blockDim) {
-  struct dim3 blockIdx;
-  struct dim3 threadIdx;
+typedef struct {
+  float *cache;
+  float *ref4;
+  float *a;
+  float *b;
+  int n;
+  Dim3 threadIdx;
+  Dim3 blockIdx;
+  Dim3 blockDim;
+  Dim3 gridDim;
+} ThreadData;
+
+pthread_barrier_t barrier;
+
+void *thread_kernel(void *arg) {
+  ThreadData *data = (ThreadData *)arg;
+
+  float *cache = data->cache;
+  float *ref4 = data->ref4;
+  float *a = data->a;
+  float *b = data->b;
+  int n = data->n;
+
+  Dim3 threadIdx = data->threadIdx;
+  Dim3 blockIdx = data->blockIdx;
+  Dim3 blockDim = data->blockDim;
+  Dim3 gridDim = data->gridDim;
+
+  int tid = (threadIdx.x + (blockIdx.x * blockDim.x));
+  int cacheIndex = threadIdx.x;
+  float temp = 0.0;
+  while ((tid < n)) {
+    temp = ((a[tid] * b[tid]) + temp);
+    tid = ((blockDim.x * gridDim.x) + tid);
+  }
+  cache[cacheIndex] = temp;
+
+  pthread_barrier_wait(&barrier);
+
+  int i = (blockDim.x / 2);
+  while ((i != 0)) {
+    if ((cacheIndex < i)) {
+      cache[cacheIndex] = (cache[(cacheIndex + i)] + cache[cacheIndex]);
+    }
+
+    pthread_barrier_wait(&barrier);
+
+    i = (i / 2);
+  }
+  if ((cacheIndex == 0)) {
+    ref4[blockIdx.x] = cache[0];
+  }
+
+  return NULL;
+}
+
+void dot_product(float *ref4, float *a, float *b, int n, Dim3 gridDim,
+                 Dim3 blockDim) {
+  int numThreads = blockDim.x;
+
+  if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
+    fprintf(stderr, "Error initializing barrier\n");
+    exit(1);
+  }
+
+  int totalThreads = gridDim.x * numThreads;
+
+  pthread_t *threads = (pthread_t *)malloc(totalThreads * sizeof(pthread_t));
+  if (threads == NULL) {
+    fprintf(stderr, "Error allocating memory for threads\n");
+    exit(1);
+  }
+
+  ThreadData *threadData =
+      (ThreadData *)malloc(totalThreads * sizeof(ThreadData));
+  if (threadData == NULL) {
+    fprintf(stderr, "Error allocating memory for thread data\n");
+    exit(1);
+  }
+
+  float **cache = (float **)malloc(gridDim.x * sizeof(float *));
+
+  Dim3 blockIdx;
+  Dim3 threadIdx;
+
+  int tid = 0;
 
   for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
+    cache[blockIdx.x] = (float *)malloc(numThreads * sizeof(float));
     for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-      float cache[256];
-      int tid = (threadIdx.x + (blockIdx.x * blockDim.x));
-      int cacheIndex = threadIdx.x;
-      float temp = 0.0;
-      while ((tid < n)) {
-        temp = ((a[tid] * b[tid]) + temp);
-        tid = ((blockDim.x * gridDim.x) + tid);
-      }
-      cache[cacheIndex] = temp;
-      // sync the fucking threads motherfucker
+      threadData[tid] =
+          (ThreadData){cache[blockIdx.x], ref4,     a,        b,      n,
+                       threadIdx,         blockIdx, blockDim, gridDim};
 
-      int i = (blockDim.x / 2);
-      while ((i != 0)) {
-        if ((cacheIndex < i)) {
-          cache[cacheIndex] = (cache[(cacheIndex + i)] + cache[cacheIndex]);
-        }
+      pthread_create(&threads[tid], NULL, thread_kernel, &threadData[tid]);
+      tid++;
+    }
 
-        // sync the fucking threads motherfucker
-
-        i = (i / 2);
-      }
-      if ((cacheIndex == 0)) {
-        ref4[blockIdx.x] = cache[0];
-      }
+    for (int i = tid - numThreads; i < tid; ++i) {
+      pthread_join(threads[i], NULL);
     }
   }
+
+  free(threads);
+  free(threadData);
+
+  pthread_barrier_destroy(&barrier);
 }
 
 void dot_product_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
@@ -73,8 +148,8 @@ void dot_product_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
 
   list = argv[3];
 
-  struct dim3 gridDim;
-  struct dim3 blockDim;
+  Dim3 gridDim;
+  Dim3 blockDim;
 
   gridDim.x = b1;
   gridDim.y = b2;

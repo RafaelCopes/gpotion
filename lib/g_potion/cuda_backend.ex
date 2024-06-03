@@ -1,314 +1,578 @@
-defmodule GPotion.CudaBackend do
-  def gen_kernel(name,para,body) do
-    "__global__\nvoid #{name}(#{para})\n{\n#{body}\n}"
+defmodule GPotion.CBackend do
+  @moduledoc """
+  Este módulo fornece funcionalidades para gerar código backend C para simular a execução de kernels CUDA em CPU.
+  """
+
+  def get_shared_variables(ast) do
+    get_shared_variables(ast, [])
   end
-  def gen_function(name,para,body,type) do
-    "__device__\n#{type} #{name}(#{para})\n{\n#{body}\n}"
+
+  defp get_shared_variables({:__block__, _, children}, acc) do
+    Enum.reduce(children, acc, &get_shared_variables(&1, &2))
   end
-  def gen_cuda(body,types,is_typed) do
-    pid = spawn_link(fn -> types_server([],types,is_typed) end)
+
+  defp get_shared_variables({:__shared__,_ , [{{:., _, [Access, :get]}, _, [arg1,arg2]}]}, acc) do
+    ["float #{generate_expression arg1}[#{generate_expression arg2}];" | acc]
+  end
+
+  defp get_shared_variables({_op, _meta, args}, acc) when is_list(args) do
+    Enum.reduce(args, acc, &get_shared_variables(&1, &2))
+  end
+
+  defp get_shared_variables(_, acc), do: acc
+
+  def generate_function_call(name, para, body) do
+    "void #{name} (#{para}, Dim3 gridDim, Dim3 blockDim) { \n #{body} \n}"
+  end
+
+  def generate_thread_function(para, body) do
+    "void* thread_kernel (void *arg) {
+      ThreadData *data = (ThreadData *)arg;\n
+      #{
+        Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, para, "\\1 *\\2")
+        |> String.split(",")
+        |> Enum.map(fn p -> "#{p} = data->#{
+          String.split(p, ~r/[* ]/, trim: true)
+          |> Enum.at(1)
+        };\n" end)}
+      Dim3 threadIdx = data->threadIdx;
+      Dim3 blockIdx = data->blockIdx;
+      Dim3 blockDim = data->blockDim;
+      Dim3 gridDim = data->gridDim;
+      \n#{body}\n
+      return NULL;
+    }
+    \n"
+  end
+
+  def get_dimensions(ast) do
+    {grid_dims, block_dims} = get_dimentions_(ast, {MapSet.new(), MapSet.new()})
+
+    {MapSet.size(grid_dims), MapSet.size(block_dims)}
+  end
+
+  defp get_dimentions_({:__block__, _, ast_list}, acc) do
+    Enum.reduce(ast_list, acc, &get_dimentions_(&1, &2))
+  end
+  defp get_dimentions_({op, _, args} = ast, {g, b}) when is_list(args) and op not in [:__block__, :__syncthreads] do
+    case ast do
+      {{:., _, [{:blockIdx, _, _}, dim]}, _, _} -> {MapSet.put(g, dim), b}
+      {{:., _, [{:threadIdx, _, _}, dim]}, _, _} -> {g, MapSet.put(b, dim)}
+      _ -> Enum.reduce(args, {g, b}, &get_dimentions_(&1, &2))
+    end
+  end
+  defp get_dimentions_([head | tail], acc) do
+    get_dimentions_(tail, get_dimentions_(head, acc))
+  end
+  defp get_dimentions_([], acc), do: acc
+  defp get_dimentions_(_, acc), do: acc
+
+  # se usar __syncthreads, tratar de forma diferente
+  def uses_thread_sync?(ast), do: check_for_thread_sync?(ast, false)
+
+  defp check_for_thread_sync?({:__syncthreads, _, _}, _), do: true
+  defp check_for_thread_sync?({_operation, _meta, args}, _) when is_list(args) do
+    Enum.any?(args, &check_for_thread_sync?(&1, false))
+  end
+  defp check_for_thread_sync?([head | tail], acc) when is_list(head) or is_tuple(head) do
+    check_for_thread_sync?(head, acc) || Enum.any?(tail, &check_for_thread_sync?(&1, false))
+  end
+  defp check_for_thread_sync?([], acc), do: acc
+  defp check_for_thread_sync?(_, acc), do: acc
+
+  # se usar __shared__, tratar de forma diferente
+  def uses_shared_variables?(ast), do: check_for_shared_variables?(ast, false)
+
+  defp check_for_shared_variables?({:__syncthreads, _, _}, _), do: true
+  defp check_for_shared_variables?({_operation, _meta, args}, _) when is_list(args) do
+    Enum.any?(args, &check_for_shared_variables?(&1, false))
+  end
+  defp check_for_shared_variables?([head | tail], acc) when is_list(head) or is_tuple(head) do
+    check_for_shared_variables?(head, acc) || Enum.any?(tail, &check_for_shared_variables?(&1, false))
+  end
+  defp check_for_shared_variables?([], acc), do: acc
+  defp check_for_shared_variables?(_, acc), do: acc
+
+  def generate_function_variables(b_dim, g_dim, shared_vars, sync) do
+    nt = case b_dim do
+      0 -> ""
+      1 -> "int numThreads = blockDim.x;"
+      2 -> "int numThreads = blockDim.x * blockDim.y;"
+      3 -> "int numThreads = blockDim.x * blockDim.y * blockDim.z;"
+      _ -> raise "Invalid dimension!"
+    end
+
+    s_var = case g_dim do
+      0 -> ""
+      1 -> "gridDim.x"
+      2 -> "gridDim.x * gridDim.y"
+      3 -> "gridDim.x * gridDim.y * gridDim.z"
+      _ -> raise "Invalid dimension!"
+    end
+
+
+    """
+    #{nt}
+
+    #{
+      if (sync) do
+        generate_init_barrier_variable()
+      end
+    }
+
+    int totalThreads = #{s_var} * numThreads;
+
+    pthread_t *threads = (pthread_t *)malloc(totalThreads * sizeof(pthread_t));
+    #{generate_init_thread_variable()}
+
+    ThreadData *threadData = (ThreadData *)malloc(totalThreads * sizeof(ThreadData));
+    #{generate_init_thread_data_variable()}
+
+
+    #{
+      Enum.reverse(shared_vars)
+      |> Enum.map(fn v ->
+      Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 **\\2")
+      |> String.replace(";", "")
+      |> Kernel.<>(" = (float **)malloc(#{s_var} * sizeof(float *));")
+      end)
+    }
+
+    Dim3 blockIdx;
+    Dim3 threadIdx;
+
+    int tid = 0;
+    \n
+    """
+  end
+
+  defp generate_simulation_loop(body, dims, index_variable, dimension_variable) do
+    case dims do
+      0 -> body
+      1 -> simulate_1d_loop_structure(index_variable, dimension_variable, body)
+      2 -> simulate_2d_loop_structure(index_variable, dimension_variable, body)
+      3 -> simulate_3d_loop_structure(index_variable, dimension_variable, body)
+      _ -> raise "Invalid dimension!"
+    end
+  end
+
+  defp simulate_1d_loop_structure(index_variable, dimension_variable, body) do
+    """
+    for (#{index_variable}.x = 0; #{index_variable}.x < #{dimension_variable}.x; ++#{index_variable}.x) {\n
+      #{body}\n
+    }\n
+    """
+  end
+
+  defp simulate_2d_loop_structure(index_variable, dimension_variable, body) do
+    """
+    for (#{index_variable}.y = 0; #{index_variable}.y < #{dimension_variable}.y; ++#{index_variable}.y) {
+      #{simulate_1d_loop_structure(index_variable, dimension_variable, body)}
+    }\n
+    """
+  end
+
+  defp simulate_3d_loop_structure(index_variable, dimension_variable, body) do
+    """
+    for (#{index_variable}.z = 0; #{index_variable}.z < #{dimension_variable}.z; ++#{index_variable}.z) {
+      #{simulate_2d_loop_structure(index_variable, dimension_variable, body)}
+    }\n
+    """
+  end
+
+  def generate_kernel_simulation_loop(body, grid_dimension, block_dimension, s_vars) do
+    thread_loop = body
+    |> generate_simulation_loop(block_dimension, "threadIdx", "blockDim")
+    |> Kernel.<>(generate_pthread_join())
+
+    s_vars = Enum.reverse(s_vars)
+    |> Enum.map(fn v ->
+    Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 \\2")
+    |> String.replace(";", "")
+    |> String.split(" ")
+    |> Enum.at(1)
+    |> Kernel.<>("[blockIdx.x] = (float *)malloc(numThreads * sizeof(float));")
+    end)
+    |> Enum.join("\n")
+
+    s_mem = s_vars <> "\n" <> thread_loop
+
+    s_mem
+    |> generate_simulation_loop(grid_dimension, "blockIdx", "gridDim")
+    |> Kernel.<>(generate_pthread_free())
+  end
+
+  def c_code_generation(body, fname, param_list, types, is_typed) do
+    pid = spawn_link(fn -> types_server([], types, is_typed) end)
     Process.register(pid, :types_server)
-    code = gen_body(body)
-    send(pid,{:kill})
-    code
-  end
-  def gen_body(body) do
 
-    case body do
-      {:__block__, _, _code} ->
-        gen_block body
-      {:do, {:__block__,pos, code}} ->
-        gen_block {:__block__, pos,code}
-      {:do, exp} ->
-        gen_command exp
-      {_,_,_} ->
-        gen_command body
+    {grid_dimension, block_dimension} = get_dimensions(body)
+
+    if uses_thread_sync?(body) do
+      code = generate_body(body)
+      send(pid, {:kill})
+
+      s_vars = get_shared_variables(body)
+
+      param_s_list = s_vars
+      |> Enum.reduce(param_list, fn v, acc -> String.replace(v, ";", "") <> ", " <> acc end)
+
+      p_call = generate_pthread_call(s_vars, param_list, uses_shared_variables?(body))
+
+      c_body = generate_function_variables(block_dimension, grid_dimension, s_vars, true)
+      <> generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, s_vars)
+      <> generate_destroy_barrier_variable()
+
+      generate_thread_structure(param_s_list)
+      <> generate_pthread_barrier()
+      <> generate_thread_function(param_s_list, code)
+      <> generate_function_call(fname, param_list, c_body)
+    else
+      code = generate_body(body)
+      send(pid, {:kill})
+
+      p_call = generate_pthread_call([], param_list, uses_shared_variables?(body))
+
+      c_body = generate_function_variables(block_dimension, grid_dimension, [], false)
+      <> generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, [])
+
+      generate_thread_structure(param_list)
+      <> generate_thread_function(param_list, code)
+      <> generate_function_call(fname, param_list, c_body)
     end
-
   end
-  defp gen_block({:__block__, _, code}) do
-    code
-        |>Enum.map(&gen_command/1)
-        |>Enum.join("\n")
-  end
-  defp gen_header_for(header) do
-    case header do
-      {:in, _,[{var,_,nil},{:range,_,[n]}]} ->
-            "for( int #{var} = 0; #{var}<#{gen_exp n}; #{var}++)"
-      {:in, _,[{var,_,nil},{:range,_,[argr1,argr2]}]} ->
-            "for( int #{var} = #{gen_exp argr1}; #{var}<#{gen_exp argr2}; #{var}++)"
-      {:in, _,[{var,_,nil},{:range,_,[argr1,argr2,step]}]} ->
-            "for( int #{var} = #{gen_exp argr1}; #{var}<#{gen_exp argr2}; #{var}+=#{gen_exp step})"
-    end
-  end
-  defp gen_command(code) do
-  #  if check_atrib_last code do
-   #    gen_atrib_last code
-   # else
-      case code do
-        {:for,_,[param,[body]]} ->
-          header = gen_header_for(param)
-          body = gen_body(body)
-          header <> "{\n" <> body <> "\n}\n"
-        {:=, _, [arg, exp]} ->
-          a = gen_exp arg
-          e = gen_exp exp
-          case arg do
-            {{:., _, [Access, :get]}, _, [_,_]} ->
-              "\t#{a} = #{e}\;"
-            _ ->
-              send(:types_server,{:check_var, a, self()})
-              receive do
-                {:is_typed} ->
-                  "\t#{a} = #{e}\;"
-                {:type,type}->
-                   "\t#{type} #{a} = #{e}\;"
-                {:alredy_declared} ->
-                   "\t#{a} = #{e}\;"
-              end
-          end
 
+  def generate_pthread_barrier() do
+    """
+    pthread_barrier_t barrier;\n
+    """
+  end
 
-        {:if, _, if_com} ->
-            genIf(if_com)
-        {:do_while, _, [[doblock]]} ->
-            "do{\n" <> gen_body(doblock)
-        {:do_while_test, _, [exp]} ->
-          "\nwhile("<> (gen_exp exp) <>  ");"
-        {:while, _, [bexp,[body]]} ->
-          "while(" <> (gen_exp bexp) <> "){\n" <> (gen_body body) <> "\n}"
-        # CRIAÇÃO DE NOVOS VETORES
-        {{:., _, [Access, :get]}, _, [arg1,arg2]} ->
-            name = gen_exp arg1
-            index = gen_exp arg2
-            "float #{name}[#{index}];"
-        {:__shared__,_ , [{{:., _, [Access, :get]}, _, [arg1,arg2]}]} ->
-          name = gen_exp arg1
-          index = gen_exp arg2
-          "__shared__ float #{name}[#{index}];"
-        {:var, _ , [{var,_,[{:=, _, [{type,_,nil}, exp]}]}]} ->
-          #IO.puts "aqui"
-          gexp = gen_exp exp
-          "#{to_string type} #{to_string var} = #{gexp};"
-        {:var, _ , [{var,_,[{:=, _, [type, exp]}]}]} ->
-            gexp = gen_exp exp
-            "#{to_string type} #{to_string var} = #{gexp};"
-        {:var, _ , [{var,_,[{type,_,_}]}]} ->
-           "#{to_string type} #{to_string var};"
-        {:var, _ , [{var,_,[type]}]} ->
-           "#{to_string type} #{to_string var};"
-        {fun, _, args} when is_list(args)->
-          nargs=args
-          |> Enum.map(&gen_exp/1)
-          |> Enum.join(", ")
-          "#{fun}(#{nargs})\;"
-        {str,_ ,_ } ->
-            "#{to_string str};"
-        number when is_integer(number) or is_float(number) -> to_string(number)
-        #string when is_string(string)) -> string #to_string(number)
+  def generate_init_barrier_variable() do
+    """
+    if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
+      fprintf(stderr, "Error initializing barrier\\n");
+      exit(1);
+    }\n
+    """
+  end
+
+  def generate_init_thread_variable() do
+    """
+    if (threads == NULL) {
+      fprintf(stderr, "Error allocating memory for threads\\n");
+      exit(1);
+    }\n
+    """
+  end
+
+  def generate_init_thread_data_variable() do
+    """
+    if (threadData == NULL) {
+      fprintf(stderr, "Error allocating memory for thread data\\n");
+      exit(1);
+    }
+    """
+  end
+
+  def generate_destroy_barrier_variable() do
+    """
+    \npthread_barrier_destroy(&barrier);\n
+    """
+  end
+
+  def generate_pthread_free() do
+    """
+    \nfree(threads);
+    free(threadData);
+    """
+  end
+
+  def generate_pthread_call(s_vars, para, shared) do
+    """
+    threadData[tid] = (ThreadData){
+      #{if shared do
+        Enum.reverse(s_vars)
+        |> Enum.map( fn v ->
+          Regex.replace( ~r/(\w+)\[(\d+)\]/, v, "\\1")
+          |> String.replace(";", "")
+          |> String.split(" ")
+          |> Enum.at(1)
+          |> Kernel.<>("[blockIdx.x]")
+        end)
+        |> Enum.join(", ")
+        |> Kernel.<>(",")
       end
-    end
-    defp gen_exp(exp) do
-      case exp do
-         {{:., _, [Access, :get]}, _, [arg1,arg2]} ->
-          name = gen_exp arg1
-          index = gen_exp arg2
-          "#{name}[#{index}]"
-        {{:., _, [{struct, _, nil}, field]},_,[]} ->
-          "#{to_string struct}.#{to_string(field)}"
-        {{:., _, [{:__aliases__, _, [struct]}, field]}, _, []} ->
-          "#{to_string struct}.#{to_string(field)}"
-        {op, _, args} when op in [:+, :-, :/, :*, :<=, :<, :>, :>=, :&&, :||, :!,:!=,:==] ->
-          case args do
-            [a1] ->
-              "(#{to_string(op)} #{gen_exp a1})"
-            [a1,a2] ->
-              "(#{gen_exp a1} #{to_string(op)} #{gen_exp a2})"
-            end
-        {var, _, nil} when is_atom(var) -> to_string(var)
-        {fun, _, args} ->
-          nargs=args
-          |> Enum.map(&gen_exp/1)
-          |> Enum.join(", ")
-          "#{fun}(#{nargs})"
-        number when is_integer(number) or is_float(number) -> to_string(number)
-        string when is_binary(string)  -> "\"#{string}\""
-      end
+      }
+      #{p = String.split(para, ",")
+      |> Enum.map(fn p ->
+        String.split(p, ~r/[* ]/, trim: true)
+        |> Enum.at(1)
+      end)
+      |> Enum.join(",")
+      Regex.replace( ~r/(\w+)\[(\d+)\]/, p, "\\1")}, threadIdx, blockIdx, blockDim, gridDim};\n
+    if (pthread_create(&threads[tid], NULL, thread_kernel, &threadData[tid]) != 0) {
+      fprintf(stderr, "Error creating thread %d\\n", tid);
+      exit(1);
+    }
 
-    end
-    defp genIf([bexp, [do: then]]) do
-        gen_then([bexp, [do: then]])
-    end
-    defp genIf([bexp, [do: thenbranch, else: elsebranch]]) do
-         gen_then([bexp, [do: thenbranch]])
-         <>
-         "else{\n" <>
-         (gen_body elsebranch) <>
-         "\n}\n"
-    end
-    defp gen_then([bexp, [do: then]]) do
-      "if(#{gen_exp bexp})\n" <>
-      "{\n" <>
-      (gen_body then) <>
-      "\n}\n"
-    end
+    tid++;
+    """
+  end
 
-#######
+  def generate_pthread_join() do
+    """
+    for (int i = tid - numThreads; i < tid; ++i) {
+      pthread_join(threads[i], NULL);
+    }
+    """
+  end
 
-def types_server(used,types, is_typed) do
-   if (is_typed) do
-    receive do
-      {:check_var, _var, pid} ->
-          send(pid,{:is_typed})
-          types_server(used,types, is_typed)
-      {:kill} ->
-            :ok
-   end
-  else
-   receive do
-    {:check_var, var, pid} ->
-      if (!Enum.member?(used,var)) do
-        type = Map.get(types,String.to_atom(var))
-        if(type == nil) do
-          IO.inspect var
-          IO.inspect types
-          raise "Could not find type for variable #{var}. Please declare it using \"var #{var} type\""
+  def generate_alloc_check(var) do
+    """
+    if (#{var} == NULL) {
+      fprintf(stderr, \"Error allocating memory!\");
+      exit(1);
+    }
+    """
+  end
+
+  def generate_body({:__block__, pos, code}), do: generate_block({:__block__, pos, code})
+  def generate_body({:do, {:__block__, pos, code}}), do: generate_block({:__block__, pos, code})
+  def generate_body({:do, exp}), do: generate_command(exp)
+  def generate_body(body), do: generate_command(body)
+
+  defp generate_block({:__block__, _, code}) do
+    code
+    |> Enum.map(&generate_command/1)
+    |> Enum.join("\n")
+  end
+
+  defp generate_header_for({:in, _, [{var, _, nil}, {:range, _, [n]}]}) do
+    "for(int #{var} = 0; #{var}<#{generate_expression n}; #{var}++)"
+  end
+  defp generate_header_for({:in, _,[{var, _, nil}, {:range, _, [argr1, argr2]}]}) do
+    "for(int #{var} = #{generate_expression argr1}; #{var}<#{generate_expression argr2}; #{var}++)"
+  end
+  defp generate_header_for({:in, _,[{var, _, nil}, {:range, _, [argr1, argr2, step]}]}) do
+    "for(int #{var} = #{generate_expression argr1}; #{var}<#{generate_expression argr2}; #{var}+=#{generate_expression step})"
+  end
+
+  defp generate_command({:for,_, [param, [body]]}) do
+    generate_header_for(param) <> "{\n" <> generate_body(body) <> "\n}\n"
+  end
+  defp generate_command({:=, _, [arg, exp]}) do
+    a = generate_expression arg
+    e = generate_expression exp
+
+    case arg do
+      {{:., _, [Access, :get]}, _, [_,_]} -> "\t#{a} = #{e}\;"
+      _ ->
+        send(:types_server, {:check_var, a, self()})
+        receive do
+          {:is_typed} -> "\t#{a} = #{e}\;"
+          {:type, type}-> "\t#{type} #{a} = #{e}\;"
+          {:alredy_declared} -> "\t#{a} = #{e}\;"
         end
-        send(pid,{:type,type})
-        types_server([var|used],types,is_typed)
-      else
-        send(pid,{:alredy_declared})
-        types_server(used,types,is_typed)
-      end
-    {:kill} ->
-      :ok
     end
-
   end
-end
+  defp generate_command({:if, _, if_com}), do: generate_if(if_com)
+  defp generate_command({:do_while, _, [[doblock]]}), do: "do{\n" <> generate_body(doblock)
+  defp generate_command({:do_while_test, _, [exp]}), do: "\nwhile("<> (generate_expression exp) <>  ");"
+  defp generate_command({:while, _, [bexp, [body]]}), do: "while(" <> (generate_expression bexp) <> "){\n" <> (generate_body body) <> "\n}"
+  # CRIAÇÃO DE NOVOS VETORES
+  defp generate_command({{:., _, [Access, :get]}, _, [arg1, arg2]}), do: "float #{generate_expression arg1}[#{generate_expression arg2}];"
+  defp generate_command({:__shared__,_ , [{{:., _, [Access, :get]}, _, [_,_]}]}), do: ""
+  defp generate_command({:__syncthreads, _, _}), do: "\npthread_barrier_wait(&barrier);\n"
+  defp generate_command({:return, _, _}), do: "return;"
+  defp generate_command({:var, _, [{var, _, [{:=, _, [{type, _, nil}, exp]}]}]}), do: "#{to_string type} #{to_string var} = #{generate_expression exp};"
+  defp generate_command({:var, _, [{var, _, [{:=, _, [type, exp]}]}]}), do: "#{to_string type} #{to_string var} = #{generate_expression exp};"
+  defp generate_command({:var, _, [{var, _, [{type, _, _}]}]}), do: "#{to_string type} #{to_string var};"
+  defp generate_command({:var, _, [{var, _, [type]}]}), do: "#{to_string type} #{to_string var};"
+  defp generate_command({fun, _, args}) when is_list(args) do
+    nargs = args
+    |> Enum.map(&generate_expression/1)
+    |> Enum.join(", ")
 
-  def gen_kernel_call(kname,nargs,types) do
-    gen_header(kname) <> gen_args(nargs,types) <> gen_call(kname,nargs)
+    "#{fun}(#{nargs})\;"
+  end
+  defp generate_command({str,_ ,_ }), do: "#{to_string str};"
+  defp generate_command(number) when is_integer(number) or is_float(number), do: to_string(number)
+
+  defp generate_expression({{:., _, [Access, :get]}, _, [arg1, arg2]}), do: "#{generate_expression arg1}[#{generate_expression arg2}]"
+  defp generate_expression({{:., _, [{struct, _, nil}, field]}, _, []}), do: "#{to_string struct}.#{to_string(field)}"
+  defp generate_expression({{:., _, [{:__aliases__, _, [struct]}, field]}, _, []}), do: "#{to_string struct}.#{to_string(field)}"
+  defp generate_expression({op, _, args}) when op in [:+, :-, :/, :*, :<=, :<, :>, :>=, :&&, :||, :!,:!=,:==] do
+    case args do
+      [a1] -> "(#{to_string(op)} #{generate_expression a1})"
+      [a1, a2] -> "(#{generate_expression a1} #{to_string(op)} #{generate_expression a2})"
+    end
+  end
+  defp generate_expression({var, _, nil}) when is_atom(var), do: to_string(var)
+  defp generate_expression({fun, _, args}) do
+    nargs = args
+    |> Enum.map(&generate_expression/1)
+    |> Enum.join(", ")
+
+    "#{fun}(#{nargs})"
+  end
+  defp generate_expression(number) when is_integer(number) or is_float(number), do: to_string(number)
+  defp generate_expression(string) when is_binary(string), do: "\"#{string}\""
+
+  defp generate_if([bexp, [do: then]]), do: generate_then([bexp, [do: then]])
+  defp generate_if([bexp, [do: thenbranch, else: elsebranch]]) do
+    generate_then([bexp, [do: thenbranch]]) <> "else{\n" <> (generate_body elsebranch) <> "\n}\n"
   end
 
-  def gen_header(fname) do
-  "extern \"C\" void #{fname}_call(ErlNifEnv *env, const ERL_NIF_TERM argv[], ErlNifResourceType* type)
-  {
+  defp generate_then([bexp, [do: then]]), do: "if(#{generate_expression bexp})\n" <> "{\n" <> (generate_body then) <> "\n}\n"
 
-    ERL_NIF_TERM list;
-    ERL_NIF_TERM head;
-    ERL_NIF_TERM tail;
-    float **array_res;
+  def generate_dim3_structure() do
+    """
+    typedef struct dim3 {
+      int x;
+      int y;
+      int z;
+    } Dim3;\n
+    """
+  end
 
-    const ERL_NIF_TERM *tuple_blocks;
-    const ERL_NIF_TERM *tuple_threads;
-    int arity;
+  def generate_thread_structure(param_list) do
+    """
+    typedef struct {
+      #{p = String.replace(param_list, ",", ";\n")
+        Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, p, "\\1 *\\2")};
+      Dim3 threadIdx;
+      Dim3 blockIdx;
+      Dim3 blockDim;
+      Dim3 gridDim;
+    } ThreadData;\n
+    """
+  end
 
-    if (!enif_get_tuple(env, argv[1], &arity, &tuple_blocks)) {
-      printf (\"spawn: blocks argument is not a tuple\");
+  def generate_access_function(kname, nargs, types) do
+    generate_header(kname) <> generate_arguments(nargs, types) <> generate_call(kname, nargs)
+  end
+
+  def generate_header(fname) do
+    "void #{fname}_call(ErlNifEnv *env, const ERL_NIF_TERM argv[], ErlNifResourceType* type)
+    {
+
+      ERL_NIF_TERM list;
+      ERL_NIF_TERM head;
+      ERL_NIF_TERM tail;
+      float **array_res;
+
+      const ERL_NIF_TERM *tuple_blocks;
+      const ERL_NIF_TERM *tuple_threads;
+      int arity;
+
+      if (!enif_get_tuple(env, argv[1], &arity, &tuple_blocks)) {
+        printf (\"spawn: blocks argument is not a tuple\");
+      }
+
+      if (!enif_get_tuple(env, argv[2], &arity, &tuple_threads)) {
+        printf (\"spawn:threads argument is not a tuple\");
+      }
+      int b1,b2,b3,t1,t2,t3;
+
+      enif_get_int(env,tuple_blocks[0],&b1);
+      enif_get_int(env,tuple_blocks[1],&b2);
+      enif_get_int(env,tuple_blocks[2],&b3);
+      enif_get_int(env,tuple_threads[0],&t1);
+      enif_get_int(env,tuple_threads[1],&t2);
+      enif_get_int(env,tuple_threads[2],&t3);
+
+      list= argv[3];
+
+      Dim3 gridDim;
+      Dim3 blockDim;
+
+      gridDim.x = b1;
+      gridDim.y = b2;
+      gridDim.z = b3;
+      blockDim.x = t1;
+      blockDim.y = t2;
+      blockDim.z = t3;\n
+    "
+  end
+
+  def generate_call(kernelname,nargs) do
+    "   #{kernelname}" <> generate_call_arguments(nargs) <> ";
     }
+    "
+  end
 
-    if (!enif_get_tuple(env, argv[2], &arity, &tuple_threads)) {
-      printf (\"spawn:threads argument is not a tuple\");
-    }
-    int b1,b2,b3,t1,t2,t3;
+  def generate_call_arguments(nargs), do: "(" <> generate_call_arguments_(nargs - 1) <>"arg#{nargs}, gridDim, blockDim)"
+  def generate_call_arguments_(0), do: ""
+  def generate_call_arguments_(n), do: generate_call_arguments_(n - 1) <> "arg#{n},"
 
-    enif_get_int(env,tuple_blocks[0],&b1);
-    enif_get_int(env,tuple_blocks[1],&b2);
-    enif_get_int(env,tuple_blocks[2],&b3);
-    enif_get_int(env,tuple_threads[0],&t1);
-    enif_get_int(env,tuple_threads[1],&t2);
-    enif_get_int(env,tuple_threads[2],&t3);
+  def generate_arguments(0, _l), do: ""
+  def generate_arguments(n, []), do: generate_arguments(n - 1, []) <> generate_matrix_argument(n)
+  def generate_arguments(n, [:matrex | t]), do: generate_arguments(n - 1, t) <> generate_matrix_argument(n)
+  def generate_arguments(n, [:int | t]), do: generate_arguments(n - 1, t) <> generate_integer_argument(n)
+  def generate_arguments(n, [:float | t]), do: generate_arguments(n - 1, t) <> generate_float_argument(n)
+  def generate_arguments(n, [:double | t]), do: generate_arguments(n - 1, t) <> generate_double_argument(n)
 
-    dim3 blocks(b1,b2,b3);
-    dim3 threads(t1,t2,t3);
+  def generate_matrix_argument(narg) do
+    "  enif_get_list_cell(env,list,&head,&tail);
+      enif_get_resource(env, head, type, (void **) &array_res);
+      float *arg#{narg} = *array_res;
+      list = tail;\n
+    "
+  end
 
-    list= argv[3];
+  def generate_integer_argument(narg) do
+    "  enif_get_list_cell(env,list,&head,&tail);
+      int arg#{narg};
+      enif_get_int(env, head, &arg#{narg});
+      list = tail;\n
+    "
+  end
 
-"
+  def generate_float_argument(narg) do
+    "  enif_get_list_cell(env,list,&head,&tail);
+      double darg#{narg};
+      float arg#{narg};
+      enif_get_double(env, head, &darg#{narg});
+      arg#{narg} = (float) darg#{narg};
+      list = tail;\n
+    "
   end
-  def gen_call(kernelname,nargs) do
-"   #{kernelname}<<<blocks, threads>>>" <> gen_call_args(nargs) <> ";
-    cudaError_t error_gpu = cudaGetLastError();
-    if(error_gpu != cudaSuccess)
-     { char message[200];
-       strcpy(message,\"Error kernel call: \");
-       strcat(message, cudaGetErrorString(error_gpu));
-       enif_raise_exception(env,enif_make_string(env, message, ERL_NIF_LATIN1));
-     }
-}
-"
-  end
-  def gen_call_args(nargs) do
-    "(" <> gen_call_args_(nargs-1) <>"arg#{nargs})"
-  end
-  def gen_call_args_(0) do
-    ""
-  end
-  def gen_call_args_(n) do
-    args = gen_call_args_(n-1)
-    args <> "arg#{n},"
-  end
-  def gen_args(0,_l) do
-    ""
-  end
-  def gen_args(n,[]) do
-    args = gen_args(n-1,[])
-    arg = gen_arg_matrix(n)
-    args <> arg
-  end
-  def gen_args(n,[:matrex|t]) do
-    args = gen_args(n-1,t)
-    arg = gen_arg_matrix(n)
-    args <> arg
-  end
-  def gen_args(n,[:int|t]) do
-    args = gen_args(n-1,t)
-    arg = gen_arg_int(n)
-    args <> arg
-  end
-  def gen_args(n,[:float|t]) do
-    args = gen_args(n-1,t)
-    arg = gen_arg_float(n)
-    args <> arg
-  end
-  def gen_args(n,[:double|t]) do
-    args = gen_args(n-1,t)
-    arg = gen_arg_double(n)
-    args <> arg
-  end
-  def gen_arg_matrix(narg) do
-"  enif_get_list_cell(env,list,&head,&tail);
-  enif_get_resource(env, head, type, (void **) &array_res);
-  float *arg#{narg} = *array_res;
-  list = tail;
 
-"
+  def generate_double_argument(narg) do
+    "  enif_get_list_cell(env,list,&head,&tail);
+      double arg#{narg};
+      enif_get_double(env, head, &darg#{narg});
+      list = tail;\n
+    "
   end
-  def gen_arg_int(narg) do
-"  enif_get_list_cell(env,list,&head,&tail);
-  int arg#{narg};
-  enif_get_int(env, head, &arg#{narg});
-  list = tail;
 
-"
-  end
-  def gen_arg_float(narg) do
-"  enif_get_list_cell(env,list,&head,&tail);
-  double darg#{narg};
-  float arg#{narg};
-  enif_get_double(env, head, &darg#{narg});
-  arg#{narg} = (float) darg#{narg};
-  list = tail;
-
-"
-  end
-  def gen_arg_double(narg) do
-"  enif_get_list_cell(env,list,&head,&tail);
-  double arg#{narg};
-  enif_get_double(env, head, &darg#{narg});
-  list = tail;
-
-"
+  def types_server(used, types, is_typed) do
+    if (is_typed) do
+      receive do
+        {:check_var, _var, pid} ->
+            send(pid, {:is_typed})
+            types_server(used, types, is_typed)
+        {:kill} -> :ok
+      end
+    else
+      receive do
+        {:check_var, var, pid} ->
+          if (!Enum.member?(used, var)) do
+            type = Map.get(types, String.to_atom(var))
+            if(type == nil) do
+              IO.inspect var
+              IO.inspect types
+              raise "Could not find type for variable #{var}. Please declare it using \"var #{var} type\""
+            end
+            send(pid, {:type, type})
+            types_server([var | used], types, is_typed)
+          else
+            send(pid, {:alredy_declared})
+            types_server(used, types, is_typed)
+          end
+        {:kill} -> :ok
+      end
+    end
   end
 end

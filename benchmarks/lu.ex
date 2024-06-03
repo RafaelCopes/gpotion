@@ -53,15 +53,16 @@ defmodule MatrixPrinter do
   end
 end
 
-[arg] = System.argv()
-size = String.to_integer(arg)
-
+#[arg] = System.argv()
+#size = String.to_integer(arg)
+size = 3
 block_size = 16
 #size = 300
 
 #a_matrix = [1, 2, 3, 4, 6, 9, 3, 7, 1]
 #a_matrix = [1, 2, 3, 4, 5, 6, 7, 8, 3, 2, 3, 2, 3, 1, 7, 8]
-a_matrix = MatrixGenerator.generate(size)
+#a_matrix = MatrixGenerator.generate(size)
+a_matrix = [30, 2, 1, 1, 30, 8, 6, 8, 30]
 
 h_a = Matrex.new([a_matrix])
 

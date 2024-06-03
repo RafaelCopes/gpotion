@@ -58,15 +58,14 @@ defmodule GPotion do
    end
 
    #IO.puts("C Backend:\n")
-   c_body = GPotion.CBackend.c_code_generation(body,inf_types,is_typed)
-   k = GPotion.CBackend.generate_function_call(fname, param_list, c_body)
+   k = GPotion.CBackend.c_code_generation(body,fname, param_list,inf_types,is_typed)
    access_func = GPotion.CBackend.generate_access_function(fname, length(types_para), Enum.reverse(types_para))
    #IO.inspect(access_func)
 
 
    #accessfunc = GPotion.CudaBackend.gen_kernel_call(fname,length(types_para),Enum.reverse(types_para))
    file = File.open!("c_src/#{module_name}.c", [:write])
-   IO.write(file, "#include \"erl_nif.h\"\n\n" <> GPotion.CBackend.generate_dim3_structure() <> k <> "\n\n" <> access_func)
+   IO.write(file, "#include \"erl_nif.h\"\n#include <pthread.h>\n\n" <> GPotion.CBackend.generate_dim3_structure() <> k <> "\n\n" <> access_func)
    File.close(file)
 
    format_c_code("c_src/#{module_name}.c")
@@ -78,6 +77,7 @@ defmodule GPotion do
 
   {_result, _errcode} = System.cmd("gcc",
   [
+  "-lpthread",
   "-o",
   "priv/#{module_name}.so",
   "-fpic",

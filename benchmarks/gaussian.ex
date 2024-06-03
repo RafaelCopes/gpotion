@@ -13,7 +13,7 @@ defmodule Gaussian.Fan1 do
     m[size * (idx + t + 1) + t] = a[size * (idx + t + 1) + t] / a[size * t + t]
   end
 end
-    
+
 # kernel fan2
 defmodule Gaussian.Fan2 do
   import GPotion
@@ -25,7 +25,7 @@ defmodule Gaussian.Fan2 do
     if (xidx >= size - 1 - t || yidx >= size - t), do: return
 
     a[size * (xidx + t + 1) + yidx + t] = a[size * (xidx + t + 1) + yidx + t] - m[size * (xidx + t + 1) + t] * a[size * t + yidx + t]
-    
+
     if (yidx == 0) do
       b[xidx + t + 1] = b[xidx + t + 1] - m[size * (xidx + t + 1) + t] * b[t]
     end
@@ -68,7 +68,7 @@ defmodule Gaussian.Substitutions do
   def forward_sub(h_a, h_b, h_m, size, max_block_size, block_size_xy) do
     kernel1 = GPotion.load(&Gaussian.Fan1.fan1/5)
     kernel2 = GPotion.load(&Gaussian.Fan2.fan2/6)
-    
+
     d_a = GPotion.new_gmatrex(h_a)
     d_b = GPotion.new_gmatrex(h_b)
     d_m = GPotion.new_gmatrex(h_m)
@@ -87,7 +87,7 @@ defmodule Gaussian.Substitutions do
     #IO.inspect(dim_block_xy)
     #IO.puts "---------"
 
-    Enum.each(0..(size - 2), fn t-> 
+    Enum.each(0..(size - 2), fn t->
       GPotion.spawn(kernel1, dim_grid, dim_block, [d_m, d_a, size, t])
       GPotion.synchronize()
       GPotion.spawn(kernel2, dim_grid_xy, dim_block_xy, [d_m, d_a, d_b, size, t])
@@ -108,7 +108,7 @@ defmodule Gaussian.Substitutions do
       else
         0
       end
-  
+
       find_b = Matrex.at(b, 1, size - i)
       find_a_diag = Matrex.at(a, 1, size * (size - i - 1) + (size - i))
       Matrex.set(acc_vector, 1, size - i, (find_b - sum) / find_a_diag)

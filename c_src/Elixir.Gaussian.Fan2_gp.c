@@ -1,15 +1,78 @@
 #include "erl_nif.h"
+#include <pthread.h>
 
-struct dim3 {
+typedef struct dim3 {
   int x;
   int y;
   int z;
-};
+} Dim3;
 
-void fan2(float *m, float *a, float *b, int size, int t, struct dim3 gridDim,
-          struct dim3 blockDim) {
-  struct dim3 blockIdx;
-  struct dim3 threadIdx;
+typedef struct {
+  float *m;
+  float *a;
+  float *b;
+  int size;
+  int t;
+  Dim3 threadIdx;
+  Dim3 blockIdx;
+  Dim3 blockDim;
+  Dim3 gridDim;
+} ThreadData;
+
+void *thread_kernel(void *arg) {
+  ThreadData *data = (ThreadData *)arg;
+
+  float *m = data->m;
+  float *a = data->a;
+  float *b = data->b;
+  int size = data->size;
+  int t = data->t;
+
+  Dim3 threadIdx = data->threadIdx;
+  Dim3 blockIdx = data->blockIdx;
+  Dim3 blockDim = data->blockDim;
+  Dim3 gridDim = data->gridDim;
+
+  int xidx = ((blockIdx.x * blockDim.x) + threadIdx.x);
+  int yidx = ((blockIdx.y * blockDim.y) + threadIdx.y);
+  if (((xidx >= ((size - 1) - t)) || (yidx >= (size - t)))) {
+    return;
+  }
+
+  a[(((size * ((xidx + t) + 1)) + yidx) + t)] =
+      (a[(((size * ((xidx + t) + 1)) + yidx) + t)] -
+       (m[((size * ((xidx + t) + 1)) + t)] * a[(((size * t) + yidx) + t)]));
+  if ((yidx == 0)) {
+    b[((xidx + t) + 1)] =
+        (b[((xidx + t) + 1)] - (m[((size * ((xidx + t) + 1)) + t)] * b[t]));
+  }
+
+  return NULL;
+}
+
+void fan2(float *m, float *a, float *b, int size, int t, Dim3 gridDim,
+          Dim3 blockDim) {
+  int numThreads = blockDim.x * blockDim.y;
+
+  int totalThreads = gridDim.x * gridDim.y * numThreads;
+
+  pthread_t *threads = (pthread_t *)malloc(totalThreads * sizeof(pthread_t));
+  if (threads == NULL) {
+    fprintf(stderr, "Error allocating memory for threads\n");
+    exit(1);
+  }
+
+  ThreadData *threadData =
+      (ThreadData *)malloc(totalThreads * sizeof(ThreadData));
+  if (threadData == NULL) {
+    fprintf(stderr, "Error allocating memory for thread data\n");
+    exit(1);
+  }
+
+  Dim3 blockIdx;
+  Dim3 threadIdx;
+
+  int tid = 0;
 
   for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
     for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
@@ -17,24 +80,28 @@ void fan2(float *m, float *a, float *b, int size, int t, struct dim3 gridDim,
       for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
         for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-          int xidx = ((blockIdx.x * blockDim.x) + threadIdx.x);
-          int yidx = ((blockIdx.y * blockDim.y) + threadIdx.y);
-          if (((xidx >= ((size - 1) - t)) || (yidx >= (size - t)))) {
-            continue;
+          threadData[tid] = (ThreadData){
+
+              m, a, b, size, t, threadIdx, blockIdx, blockDim, gridDim};
+
+          if (pthread_create(&threads[tid], NULL, thread_kernel,
+                             &threadData[tid]) != 0) {
+            fprintf(stderr, "Error creating thread %d\n", tid);
+            exit(1);
           }
 
-          a[(((size * ((xidx + t) + 1)) + yidx) + t)] =
-              (a[(((size * ((xidx + t) + 1)) + yidx) + t)] -
-               (m[((size * ((xidx + t) + 1)) + t)] *
-                a[(((size * t) + yidx) + t)]));
-          if ((yidx == 0)) {
-            b[((xidx + t) + 1)] = (b[((xidx + t) + 1)] -
-                                   (m[((size * ((xidx + t) + 1)) + t)] * b[t]));
-          }
+          tid++;
         }
+      }
+
+      for (int i = tid - numThreads; i < tid; ++i) {
+        pthread_join(threads[i], NULL);
       }
     }
   }
+
+  free(threads);
+  free(threadData);
 }
 
 void fan2_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
@@ -67,8 +134,8 @@ void fan2_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
 
   list = argv[3];
 
-  struct dim3 gridDim;
-  struct dim3 blockDim;
+  Dim3 gridDim;
+  Dim3 blockDim;
 
   gridDim.x = b1;
   gridDim.y = b2;

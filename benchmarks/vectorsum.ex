@@ -11,7 +11,8 @@ defmodule VecAdd do
   end
 end
 
-n = 10
+[arg] = System.argv()
+n = String.to_integer(arg)
 
 list = [Enum.to_list(1..n)]
 
@@ -24,7 +25,6 @@ kernel=GPotion.load(&VecAdd.add_vectors/5)
 
 threadsPerBlock = 128;
 numberOfBlocks = div(n + threadsPerBlock - 1, threadsPerBlock)
-
 
 prev = System.monotonic_time()
 

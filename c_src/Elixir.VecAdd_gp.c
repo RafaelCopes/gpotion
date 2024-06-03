@@ -8,10 +8,10 @@ typedef struct dim3 {
 } Dim3;
 
 typedef struct {
-  float *m;
+  float *result;
   float *a;
-  int size;
-  int t;
+  float *b;
+  int n;
   Dim3 threadIdx;
   Dim3 blockIdx;
   Dim3 blockDim;
@@ -21,28 +21,27 @@ typedef struct {
 void *thread_kernel(void *arg) {
   ThreadData *data = (ThreadData *)arg;
 
-  float *m = data->m;
+  float *result = data->result;
   float *a = data->a;
-  int size = data->size;
-  int t = data->t;
+  float *b = data->b;
+  int n = data->n;
 
   Dim3 threadIdx = data->threadIdx;
   Dim3 blockIdx = data->blockIdx;
   Dim3 blockDim = data->blockDim;
   Dim3 gridDim = data->gridDim;
 
-  int idx = (threadIdx.x + (blockIdx.x * blockDim.x));
-  if ((idx >= ((size - 1) - t))) {
-    return;
+  int index = (threadIdx.x + (blockIdx.x * blockDim.x));
+  int stride = (blockDim.x * gridDim.x);
+  for (int i = index; i < n; i += stride) {
+    result[i] = (a[i] + b[i]);
   }
-
-  m[((size * ((idx + t) + 1)) + t)] =
-      (a[((size * ((idx + t) + 1)) + t)] / a[((size * t) + t)]);
 
   return NULL;
 }
 
-void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
+void add_vectors(float *result, float *a, float *b, int n, Dim3 gridDim,
+                 Dim3 blockDim) {
   int numThreads = blockDim.x;
 
   int totalThreads = gridDim.x * numThreads;
@@ -71,7 +70,7 @@ void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
 
       threadData[tid] = (ThreadData){
 
-          m, a, size, t, threadIdx, blockIdx, blockDim, gridDim};
+          result, a, b, n, threadIdx, blockIdx, blockDim, gridDim};
 
       if (pthread_create(&threads[tid], NULL, thread_kernel,
                          &threadData[tid]) != 0) {
@@ -91,8 +90,8 @@ void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
   free(threadData);
 }
 
-void fan1_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
-               ErlNifResourceType *type) {
+void add_vectors_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
+                      ErlNifResourceType *type) {
 
   ERL_NIF_TERM list;
   ERL_NIF_TERM head;
@@ -142,8 +141,8 @@ void fan1_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
   list = tail;
 
   enif_get_list_cell(env, list, &head, &tail);
-  int arg3;
-  enif_get_int(env, head, &arg3);
+  enif_get_resource(env, head, type, (void **)&array_res);
+  float *arg3 = *array_res;
   list = tail;
 
   enif_get_list_cell(env, list, &head, &tail);
@@ -151,5 +150,5 @@ void fan1_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
   enif_get_int(env, head, &arg4);
   list = tail;
 
-  fan1(arg1, arg2, arg3, arg4, gridDim, blockDim);
+  add_vectors(arg1, arg2, arg3, arg4, gridDim, blockDim);
 }

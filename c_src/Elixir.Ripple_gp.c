@@ -8,10 +8,9 @@ typedef struct dim3 {
 } Dim3;
 
 typedef struct {
-  float *m;
-  float *a;
-  int size;
-  int t;
+  float *ptr;
+  int dim;
+  float ticks;
   Dim3 threadIdx;
   Dim3 blockIdx;
   Dim3 blockDim;
@@ -21,31 +20,36 @@ typedef struct {
 void *thread_kernel(void *arg) {
   ThreadData *data = (ThreadData *)arg;
 
-  float *m = data->m;
-  float *a = data->a;
-  int size = data->size;
-  int t = data->t;
+  float *ptr = data->ptr;
+  int dim = data->dim;
+  float ticks = data->ticks;
 
   Dim3 threadIdx = data->threadIdx;
   Dim3 blockIdx = data->blockIdx;
   Dim3 blockDim = data->blockDim;
   Dim3 gridDim = data->gridDim;
 
-  int idx = (threadIdx.x + (blockIdx.x * blockDim.x));
-  if ((idx >= ((size - 1) - t))) {
-    return;
-  }
-
-  m[((size * ((idx + t) + 1)) + t)] =
-      (a[((size * ((idx + t) + 1)) + t)] / a[((size * t) + t)]);
+  int x = (threadIdx.x + (blockIdx.x * blockDim.x));
+  int y = (threadIdx.y + (blockIdx.y * blockDim.y));
+  int offset = (x + ((y * blockDim.x) * gridDim.x));
+  float fx = ((0.5 * x) - (dim / 15));
+  float fy = ((0.5 * y) - (dim / 15));
+  float d = sqrtf(((fx * fx) + (fy * fy)));
+  float grey = floor((128.0 + ((127.0 * cos(((d / 10.0) - (ticks / 7.0)))) /
+                               ((d / 10.0) + 1.0))));
+  ptr[((offset * 4) + 0)] = grey;
+  ptr[((offset * 4) + 1)] = grey;
+  ptr[((offset * 4) + 2)] = grey;
+  ptr[((offset * 4) + 3)] = 255;
 
   return NULL;
 }
 
-void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
-  int numThreads = blockDim.x;
+void ripple_kernel(float *ptr, int dim, float ticks, Dim3 gridDim,
+                   Dim3 blockDim) {
+  int numThreads = blockDim.x * blockDim.y;
 
-  int totalThreads = gridDim.x * numThreads;
+  int totalThreads = gridDim.x * gridDim.y * numThreads;
 
   pthread_t *threads = (pthread_t *)malloc(totalThreads * sizeof(pthread_t));
   if (threads == NULL) {
@@ -65,25 +69,29 @@ void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
 
   int tid = 0;
 
-  for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
+  for (blockIdx.y = 0; blockIdx.y < gridDim.y; ++blockIdx.y) {
+    for (blockIdx.x = 0; blockIdx.x < gridDim.x; ++blockIdx.x) {
 
-    for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
+      for (threadIdx.y = 0; threadIdx.y < blockDim.y; ++threadIdx.y) {
+        for (threadIdx.x = 0; threadIdx.x < blockDim.x; ++threadIdx.x) {
 
-      threadData[tid] = (ThreadData){
+          threadData[tid] = (ThreadData){
 
-          m, a, size, t, threadIdx, blockIdx, blockDim, gridDim};
+              ptr, dim, ticks, threadIdx, blockIdx, blockDim, gridDim};
 
-      if (pthread_create(&threads[tid], NULL, thread_kernel,
-                         &threadData[tid]) != 0) {
-        fprintf(stderr, "Error creating thread %d\n", tid);
-        exit(1);
+          if (pthread_create(&threads[tid], NULL, thread_kernel,
+                             &threadData[tid]) != 0) {
+            fprintf(stderr, "Error creating thread %d\n", tid);
+            exit(1);
+          }
+
+          tid++;
+        }
       }
 
-      tid++;
-    }
-
-    for (int i = tid - numThreads; i < tid; ++i) {
-      pthread_join(threads[i], NULL);
+      for (int i = tid - numThreads; i < tid; ++i) {
+        pthread_join(threads[i], NULL);
+      }
     }
   }
 
@@ -91,8 +99,8 @@ void fan1(float *m, float *a, int size, int t, Dim3 gridDim, Dim3 blockDim) {
   free(threadData);
 }
 
-void fan1_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
-               ErlNifResourceType *type) {
+void ripple_kernel_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
+                        ErlNifResourceType *type) {
 
   ERL_NIF_TERM list;
   ERL_NIF_TERM head;
@@ -137,19 +145,16 @@ void fan1_call(ErlNifEnv *env, const ERL_NIF_TERM argv[],
   list = tail;
 
   enif_get_list_cell(env, list, &head, &tail);
-  enif_get_resource(env, head, type, (void **)&array_res);
-  float *arg2 = *array_res;
+  int arg2;
+  enif_get_int(env, head, &arg2);
   list = tail;
 
   enif_get_list_cell(env, list, &head, &tail);
-  int arg3;
-  enif_get_int(env, head, &arg3);
+  double darg3;
+  float arg3;
+  enif_get_double(env, head, &darg3);
+  arg3 = (float)darg3;
   list = tail;
 
-  enif_get_list_cell(env, list, &head, &tail);
-  int arg4;
-  enif_get_int(env, head, &arg4);
-  list = tail;
-
-  fan1(arg1, arg2, arg3, arg4, gridDim, blockDim);
+  ripple_kernel(arg1, arg2, arg3, gridDim, blockDim);
 }
