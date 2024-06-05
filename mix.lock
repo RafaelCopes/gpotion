@@ -1,4 +1,6 @@
 %{
   "elixir_make": {:hex, :elixir_make, "0.7.7", "7128c60c2476019ed978210c245badf08b03dbec4f24d05790ef791da11aa17c", [:mix], [{:castore, "~> 0.1 or ~> 1.0", [hex: :castore, repo: "hexpm", optional: true]}], "hexpm", "5bc19fff950fad52bbe5f211b12db9ec82c6b34a9647da0c2224b8b8464c7e6c"},
   "matrex": {:hex, :matrex, "0.6.8", "ccb491e661bae7931ee6b0e68f5e1cd28528e5360a59bc3ab4d759b89be1701e", [:make], [{:elixir_make, "~> 0.4", [hex: :elixir_make, repo: "hexpm", optional: false]}], "hexpm", "043ef9fdd9809b012568915f2fc396ea5c5631fd792f75c1148f03d478d60901"},
+  "random": {:hex, :random, "0.2.4", "6b4864e4c8055a0045f10e83b01452239ffe9b86945fa3f0473a885ae3996bdd", [:mix], [{:tinymt, "~> 0.3.1", [hex: :tinymt, repo: "hexpm", optional: false]}], "hexpm", "836f7aa84f9d3ca8c4c161332ab1597c4e68e2bf9180b8cfd5e60e06b7012928"},
+  "tinymt": {:hex, :tinymt, "0.3.2", "679e205497757c85d7545e1774665412d9715fdf28ee8a82bef225a0db4b1b01", [:make, :mix], [], "hexpm", "b7c7e502a5fe3bdf5405bfa8dc54ad80264b9c773bfe386bbff372b347c23bf2"},
 }

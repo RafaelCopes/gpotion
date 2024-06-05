@@ -1,5 +1,5 @@
 {application,gpotion,
-             [{applications,[kernel,stdlib,elixir,logger,matrex]},
+             [{applications,[kernel,stdlib,elixir,logger,matrex,random]},
               {description,"gpotion"},
               {modules,['Elixir.GPotion','Elixir.GPotion.CBackend',
                         'Elixir.GPotion.TypeInference']},

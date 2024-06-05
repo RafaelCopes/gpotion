@@ -1,10 +1,11 @@
-defmodule GPUDP do
+defmodule Dot do
   import GPotion
   gpotion dot_product(ref4, a, b, n) do
 
   __shared__ cache[256]
 
   tid = threadIdx.x + blockIdx.x * blockDim.x;
+  tidy = threadIdx.y + blockIdx.y * blockDim.y;
   cacheIndex = threadIdx.x
   temp = 0.0
 
@@ -47,7 +48,7 @@ numberOfBlocks = blocksPerGrid
 
 prev = System.monotonic_time()
 
-kernel=GPotion.load(&GPUDP.dot_product/4)
+kernel=GPotion.load(&Dot.dot_product/4)
 
 ref1=GPotion.new_gmatrex(vet1)
 ref2=GPotion.new_gmatrex(vet2)

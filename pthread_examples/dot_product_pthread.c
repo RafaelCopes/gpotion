@@ -26,50 +26,45 @@ typedef struct {
 } ThreadData;
 
 void *thread_func(void *arg) {
-    ThreadData *data = (ThreadData *)arg;
-    float *a = data->a;
-    float *b = data->b;
-    float *c = data->c;
-    int N = data->N;
-    dim3 blockDim = data->blockDim;
-    dim3 blockIdx = data->blockIdx;
-    dim3 threadIdx = data->threadIdx;
-    float *cache = data->cache;
+      ThreadData *data = (ThreadData *)arg;
 
-    int threadIndexInBlock = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y;
-    int blockIndexInGrid = blockIdx.x + blockIdx.y * data->gridDim.x + blockIdx.z * data->gridDim.x * data->gridDim.y;
-    int globalThreadIndex = threadIndexInBlock + blockIndexInGrid * (blockDim.x * blockDim.y * blockDim.z);
+  float *cache = data->cache;
+  float *ref4 = data->c;
+  float *a = data->a;
+  float *b = data->b;
+  int n = data->N;
 
-    int cacheIndex = threadIndexInBlock;
-    float temp = 0;
-    while (globalThreadIndex < N) {
-        temp += a[globalThreadIndex] * b[globalThreadIndex];
-        globalThreadIndex += blockDim.x * blockDim.y * blockDim.z * data->gridDim.x * data->gridDim.y * data->gridDim.z;
+  dim3 threadIdx = data->threadIdx;
+  dim3 blockIdx = data->blockIdx;
+  dim3 blockDim = data->blockDim;
+  dim3 gridDim = data->gridDim;
+
+  int tid = (threadIdx.x + (blockIdx.x * blockDim.x));
+  int cacheIndex = threadIdx.x;
+  float temp = 0.0;
+  while ((tid < n)) {
+    temp = ((a[tid] * b[tid]) + temp);
+    tid = ((blockDim.x * gridDim.x) + tid);
+  }
+  cache[cacheIndex] = temp;
+
+  pthread_barrier_wait(&barrier);
+
+  int i = (blockDim.x / 2);
+  while ((i != 0)) {
+    if ((cacheIndex < i)) {
+      cache[cacheIndex] = (cache[(cacheIndex + i)] + cache[cacheIndex]);
     }
-
-    cache[cacheIndex] = temp;
-
-    printf("Thread (%d, %d, %d): globalThreadIndex = %d, temp = %f\n", blockIdx.x, threadIdx.x, cacheIndex, globalThreadIndex, temp);
 
     pthread_barrier_wait(&barrier);
 
-    int i = blockDim.x * blockDim.y * blockDim.z / 2;
-    while (i != 0) {
-        if (cacheIndex < i) {
-            cache[cacheIndex] += cache[cacheIndex + i];
-        }
+    i = (i / 2);
+  }
+  if ((cacheIndex == 0)) {
+    ref4[blockIdx.x] = cache[0];
+  }
 
-        pthread_barrier_wait(&barrier);
-        i /= 2;
-    }
-
-    if (cacheIndex == 0) {
-        int blockId = blockIdx.x + blockIdx.y * data->gridDim.x + blockIdx.z * data->gridDim.x * data->gridDim.y;
-        c[blockId] = cache[0];
-        printf("Block (%d, %d, %d): cache[0] = %f\n", blockIdx.x, blockIdx.y, blockIdx.z, cache[0]);
-    }
-
-    return NULL;
+  return NULL;
 }
 
 void dot(float *a, float *b, float *c, dim3 gridDim, dim3 blockDim, int N) {
@@ -97,20 +92,20 @@ void dot(float *a, float *b, float *c, dim3 gridDim, dim3 blockDim, int N) {
     }
 
     int tid = 0;
+    int bid = 0;
     for (int blockIdx_z = 0; blockIdx_z < gridDim.z; ++blockIdx_z) {
         for (int blockIdx_y = 0; blockIdx_y < gridDim.y; ++blockIdx_y) {
             for (int blockIdx_x = 0; blockIdx_x < gridDim.x; ++blockIdx_x) {
-                int blockId = blockIdx_x + blockIdx_y * gridDim.x + blockIdx_z * gridDim.x * gridDim.y;
-                cache[blockId] = (float *)malloc(numThreads * sizeof(float));
-                if (cache[blockId] == NULL) {
-                    fprintf(stderr, "Error allocating memory for cache[%d]\n", blockId);
+                cache[bid] = (float *)malloc(numThreads * sizeof(float));
+                if (cache[bid] == NULL) {
+                    fprintf(stderr, "Error allocating memory for cache[%d]\n", bid);
                     exit(1);
                 }
                 for (int threadIdx_z = 0; threadIdx_z < blockDim.z; ++threadIdx_z) {
                     for (int threadIdx_y = 0; threadIdx_y < blockDim.y; ++threadIdx_y) {
                         for (int threadIdx_x = 0; threadIdx_x < blockDim.x; ++threadIdx_x) {
                             threadData[tid] = (ThreadData){a, b, c, N, gridDim, blockDim, {blockIdx_x, blockIdx_y, blockIdx_z},
-                                                           {threadIdx_x, threadIdx_y, threadIdx_z}, cache[blockId]};
+                                                           {threadIdx_x, threadIdx_y, threadIdx_z}, cache[bid]};
                             if (pthread_create(&threads[tid], NULL, thread_func, &threadData[tid]) != 0) {
                                 fprintf(stderr, "Error creating thread %d\n", tid);
                                 exit(1);
@@ -124,6 +119,8 @@ void dot(float *a, float *b, float *c, dim3 gridDim, dim3 blockDim, int N) {
                 for (int i = tid - numThreads; i < tid; ++i) {
                     pthread_join(threads[i], NULL);
                 }
+
+                bid++;
             }
         }
     }

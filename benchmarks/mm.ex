@@ -47,11 +47,13 @@ c=GPotion.new_gmatrex(1,m*k)
 GPotion.spawn(ker,{grid_rows,grid_cols,1},{block_size,block_size,1},[a,b,c,m,n,k])
 GPotion.synchronize()
 
-_result = GPotion.get_gmatrex(c)
+result = GPotion.get_gmatrex(c)
 
 next = System.monotonic_time()
+
+IO.inspect result
+
 #IO.puts "time gpu #{System.convert_time_unit(next-prev,:native,:millisecond)}"
 IO.puts "GPotion\t#{m}\t#{System.convert_time_unit(next-prev,:native,:millisecond)} "
 
-#IO.inspect result
 #IO.puts GPU.Backend.gen_c_kernel('addVectors',4,[])

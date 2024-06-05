@@ -56,21 +56,23 @@ defmodule MatrixPrinter do
   end
 end
 
-[arg] = System.argv()
-size = String.to_integer(arg)
+#[arg] = System.argv()
+#size = String.to_integer(arg)
 
+size = 3
 #a_matrix = [[1, 2, 3, 4], [5, 6, 7, 8], [3, 2, 3, 2], [3, 1, 7, 8]]
-a_matrix = MatrixGenerator.generate(size)
+a_matrix = [[30, 2, 1], [1, 30, 8], [6, 8, 30]]
+#a_matrix = MatrixGenerator.generate(size)
 
 #IO.puts("A matrix:")
 #MatrixPrinter.print_matrix(a_matrix)
 
 prev = System.monotonic_time()
-_lu_matrix = LU.Seq.lu_decomposition(a_matrix)
+lu_matrix = LU.Seq.lu_decomposition(a_matrix)
 next = System.monotonic_time()
 
-#IO.puts("LU Matrix:")
-#MatrixPrinter.print_matrix(lu_matrix)
+IO.puts("LU Matrix:")
+MatrixPrinter.print_matrix(lu_matrix)
 #MatrixPrinter.print_matrex(u, n)
 
 IO.puts "Elixir\t#{size}\t#{System.convert_time_unit(next-prev,:native,:millisecond)}"

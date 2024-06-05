@@ -93,9 +93,9 @@ defmodule GPotion.CBackend do
   defp check_for_shared_variables?([], acc), do: acc
   defp check_for_shared_variables?(_, acc), do: acc
 
-  def generate_function_variables(b_dim, g_dim, shared_vars, sync) do
+  def generate_function_variables(b_dim, g_dim, shared, shared_vars, sync) do
     nt = case b_dim do
-      0 -> ""
+      0 -> "int numThreads = 1;"
       1 -> "int numThreads = blockDim.x;"
       2 -> "int numThreads = blockDim.x * blockDim.y;"
       3 -> "int numThreads = blockDim.x * blockDim.y * blockDim.z;"
@@ -109,7 +109,6 @@ defmodule GPotion.CBackend do
       3 -> "gridDim.x * gridDim.y * gridDim.z"
       _ -> raise "Invalid dimension!"
     end
-
 
     """
     #{nt}
@@ -141,6 +140,11 @@ defmodule GPotion.CBackend do
     Dim3 blockIdx;
     Dim3 threadIdx;
 
+    #{
+      if shared do
+      "int bid = 0;"
+      end
+    }
     int tid = 0;
     \n
     """
@@ -180,26 +184,41 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_kernel_simulation_loop(body, grid_dimension, block_dimension, s_vars) do
+  def generate_kernel_simulation_loop(body, grid_dimension, block_dimension, shared, s_vars) do
     thread_loop = body
     |> generate_simulation_loop(block_dimension, "threadIdx", "blockDim")
     |> Kernel.<>(generate_pthread_join())
 
     s_vars = Enum.reverse(s_vars)
     |> Enum.map(fn v ->
-    Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 \\2")
+    var = Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 \\2")
     |> String.replace(";", "")
     |> String.split(" ")
     |> Enum.at(1)
-    |> Kernel.<>("[blockIdx.x] = (float *)malloc(numThreads * sizeof(float));")
+
+    """
+    #{var}[bid] = (float *)malloc(numThreads * sizeof(float));
+    if (#{var}[bid] == NULL) {
+      fprintf(stderr, "Error allocating memory for #{var}[%d]\\n", bid);
+      exit(1);
+    }
+    """
     end)
     |> Enum.join("\n")
+    |> Kernel.<>("\n")
 
-    s_mem = s_vars <> "\n" <> thread_loop
 
-    s_mem
-    |> generate_simulation_loop(grid_dimension, "blockIdx", "gridDim")
-    |> Kernel.<>(generate_pthread_free())
+    if shared do
+      s_mem = s_vars <> "\n" <> thread_loop <> "bid++;"
+
+      s_mem
+      |> generate_simulation_loop(grid_dimension, "blockIdx", "gridDim")
+    else
+      s_mem = s_vars <> "\n" <> thread_loop
+
+      s_mem
+      |> generate_simulation_loop(grid_dimension, "blockIdx", "gridDim")
+    end
   end
 
   def c_code_generation(body, fname, param_list, types, is_typed) do
@@ -208,10 +227,10 @@ defmodule GPotion.CBackend do
 
     {grid_dimension, block_dimension} = get_dimensions(body)
 
-    if uses_thread_sync?(body) do
-      code = generate_body(body)
-      send(pid, {:kill})
+    code = generate_body(body)
+    send(pid, {:kill})
 
+    if uses_thread_sync?(body) do
       s_vars = get_shared_variables(body)
 
       param_s_list = s_vars
@@ -219,22 +238,22 @@ defmodule GPotion.CBackend do
 
       p_call = generate_pthread_call(s_vars, param_list, uses_shared_variables?(body))
 
-      c_body = generate_function_variables(block_dimension, grid_dimension, s_vars, true)
-      <> generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, s_vars)
-      <> generate_destroy_barrier_variable()
+      c_body = generate_function_variables(block_dimension, grid_dimension, true, s_vars, true)
+      |>  Kernel.<>(generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, true, s_vars))
+      |> Kernel.<>(generate_free_shared_vars(s_vars, grid_dimension))
+      |> Kernel.<>(generate_pthread_free())
+      |> Kernel.<>(generate_destroy_barrier_variable())
 
       generate_thread_structure(param_s_list)
       <> generate_pthread_barrier()
       <> generate_thread_function(param_s_list, code)
       <> generate_function_call(fname, param_list, c_body)
     else
-      code = generate_body(body)
-      send(pid, {:kill})
-
       p_call = generate_pthread_call([], param_list, uses_shared_variables?(body))
 
-      c_body = generate_function_variables(block_dimension, grid_dimension, [], false)
-      <> generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, [])
+      c_body = generate_function_variables(block_dimension, grid_dimension, false, [], false)
+      |> Kernel.<>(generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, false, []))
+      |> Kernel.<>(generate_pthread_free())
 
       generate_thread_structure(param_list)
       <> generate_thread_function(param_list, code)
@@ -288,6 +307,35 @@ defmodule GPotion.CBackend do
     """
   end
 
+  def generate_free_shared_vars(s_vars, g_dim) do
+    size = case g_dim do
+      0 -> ""
+      1 -> "gridDim.x"
+      2 -> "gridDim.x * gridDim.y"
+      3 -> "gridDim.x * gridDim.y * gridDim.z"
+      _ -> raise "Invalid dimension!"
+    end
+
+    """
+    for (int i = 0; i < #{size}; ++i) {
+      #{
+        Enum.reverse(s_vars)
+        |> Enum.map(fn v ->
+        a = Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 \\2")
+        |> String.replace(";", "")
+        |> String.split(" ")
+        |> Enum.at(1)
+
+        "free(#{a}[i]);"
+        end)
+        |> Enum.join("\n")
+      }
+    }
+    """
+
+
+  end
+
   def generate_pthread_call(s_vars, para, shared) do
     """
     threadData[tid] = (ThreadData){
@@ -298,7 +346,7 @@ defmodule GPotion.CBackend do
           |> String.replace(";", "")
           |> String.split(" ")
           |> Enum.at(1)
-          |> Kernel.<>("[blockIdx.x]")
+          |> Kernel.<>("[bid]")
         end)
         |> Enum.join(", ")
         |> Kernel.<>(",")
@@ -325,6 +373,7 @@ defmodule GPotion.CBackend do
     for (int i = tid - numThreads; i < tid; ++i) {
       pthread_join(threads[i], NULL);
     }
+
     """
   end
 
