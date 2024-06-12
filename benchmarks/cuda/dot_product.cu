@@ -5,10 +5,10 @@
 
 const int threadsPerBlock = 256;
 
-
-
 __global__ void dot(float* a, float* b, float* c, int N) {
 	__shared__ float cache[threadsPerBlock];
+	__shared__ float cache2[threadsPerBlock][threadsPerBlock];
+	__shared__ float cache3[threadsPerBlock][threadsPerBlock][threadsPerBlock];
 	int tid = threadIdx.x + blockIdx.x * blockDim.x;
 	int cacheIndex = threadIdx.x;
 

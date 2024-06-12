@@ -85,22 +85,16 @@ void dot(float *a, float *b, float *c, dim3 gridDim, dim3 blockDim, int N) {
         fprintf(stderr, "Error allocating memory for thread data\n");
         exit(1);
     }
-    float **cache = (float **)malloc(gridDim.x * gridDim.y * gridDim.z * sizeof(float *));
-    if (cache == NULL) {
-        fprintf(stderr, "Error allocating memory for cache\n");
-        exit(1);
-    }
+
 
     int tid = 0;
     int bid = 0;
+
     for (int blockIdx_z = 0; blockIdx_z < gridDim.z; ++blockIdx_z) {
         for (int blockIdx_y = 0; blockIdx_y < gridDim.y; ++blockIdx_y) {
             for (int blockIdx_x = 0; blockIdx_x < gridDim.x; ++blockIdx_x) {
-                cache[bid] = (float *)malloc(numThreads * sizeof(float));
-                if (cache[bid] == NULL) {
-                    fprintf(stderr, "Error allocating memory for cache[%d]\n", bid);
-                    exit(1);
-                }
+                float cache[gridDim.x * gridDim.y * gridDim.z][256];
+
                 for (int threadIdx_z = 0; threadIdx_z < blockDim.z; ++threadIdx_z) {
                     for (int threadIdx_y = 0; threadIdx_y < blockDim.y; ++threadIdx_y) {
                         for (int threadIdx_x = 0; threadIdx_x < blockDim.x; ++threadIdx_x) {
@@ -125,18 +119,8 @@ void dot(float *a, float *b, float *c, dim3 gridDim, dim3 blockDim, int N) {
         }
     }
 
-    for (int blockIdx_z = 0; blockIdx_z < gridDim.z; ++blockIdx_z) {
-        for (int blockIdx_y = 0; blockIdx_y < gridDim.y; ++blockIdx_y) {
-            for (int blockIdx_x = 0; blockIdx_x < gridDim.x; ++blockIdx_x) {
-                int blockId = blockIdx_x + blockIdx_y * gridDim.x + blockIdx_z * gridDim.x * gridDim.y;
-                free(cache[blockId]);
-            }
-        }
-    }
-
     free(threads);
     free(threadData);
-    free(cache);
 
     pthread_barrier_destroy(&barrier);
 }

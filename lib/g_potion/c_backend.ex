@@ -3,7 +3,7 @@ defmodule GPotion.CBackend do
   Este módulo fornece funcionalidades para gerar código backend C para simular a execução de kernels CUDA em CPU.
   """
 
-  def get_shared_variables(ast) do
+  defp get_shared_variables(ast) do
     get_shared_variables(ast, [])
   end
 
@@ -21,15 +21,15 @@ defmodule GPotion.CBackend do
 
   defp get_shared_variables(_, acc), do: acc
 
-  def generate_function_call(name, para, body) do
+  defp generate_function_call(name, para, body) do
     "void #{name} (#{para}, Dim3 gridDim, Dim3 blockDim) { \n #{body} \n}"
   end
 
-  def generate_thread_function(para, body) do
+  defp generate_thread_function(para, body) do
     "void* thread_kernel (void *arg) {
       ThreadData *data = (ThreadData *)arg;\n
       #{
-        Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, para, "\\1 *\\2")
+        Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, para, "\\1 * \\2")
         |> String.split(",")
         |> Enum.map(fn p -> "#{p} = data->#{
           String.split(p, ~r/[* ]/, trim: true)
@@ -45,7 +45,7 @@ defmodule GPotion.CBackend do
     \n"
   end
 
-  def get_dimensions(ast) do
+  defp get_dimensions(ast) do
     {grid_dims, block_dims} = get_dimentions_(ast, {MapSet.new(), MapSet.new()})
 
     {MapSet.size(grid_dims), MapSet.size(block_dims)}
@@ -68,7 +68,7 @@ defmodule GPotion.CBackend do
   defp get_dimentions_(_, acc), do: acc
 
   # se usar __syncthreads, tratar de forma diferente
-  def uses_thread_sync?(ast), do: check_for_thread_sync?(ast, false)
+  defp uses_thread_sync?(ast), do: check_for_thread_sync?(ast, false)
 
   defp check_for_thread_sync?({:__syncthreads, _, _}, _), do: true
   defp check_for_thread_sync?({_operation, _meta, args}, _) when is_list(args) do
@@ -81,7 +81,7 @@ defmodule GPotion.CBackend do
   defp check_for_thread_sync?(_, acc), do: acc
 
   # se usar __shared__, tratar de forma diferente
-  def uses_shared_variables?(ast), do: check_for_shared_variables?(ast, false)
+  defp uses_shared_variables?(ast), do: check_for_shared_variables?(ast, false)
 
   defp check_for_shared_variables?({:__syncthreads, _, _}, _), do: true
   defp check_for_shared_variables?({_operation, _meta, args}, _) when is_list(args) do
@@ -93,7 +93,16 @@ defmodule GPotion.CBackend do
   defp check_for_shared_variables?([], acc), do: acc
   defp check_for_shared_variables?(_, acc), do: acc
 
-  def generate_function_variables(b_dim, g_dim, shared, shared_vars, sync) do
+  defp generate_shared_vars_alloc(shared_vars, size) do
+    Enum.reverse(shared_vars)
+    |> Enum.map(fn v ->
+    Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 **\\2")
+    |> String.replace(";", "")
+    |> Kernel.<>(" = (float **)malloc(#{size} * sizeof(float *));")
+    end)
+  end
+
+  defp generate_function_variables(b_dim, g_dim, shared, shared_vars, sync) do
     nt = case b_dim do
       0 -> "int numThreads = 1;"
       1 -> "int numThreads = blockDim.x;"
@@ -113,11 +122,7 @@ defmodule GPotion.CBackend do
     """
     #{nt}
 
-    #{
-      if (sync) do
-        generate_init_barrier_variable()
-      end
-    }
+    #{if (sync), do: generate_init_barrier_variable()}
 
     int totalThreads = #{s_var} * numThreads;
 
@@ -128,23 +133,12 @@ defmodule GPotion.CBackend do
     #{generate_init_thread_data_variable()}
 
 
-    #{
-      Enum.reverse(shared_vars)
-      |> Enum.map(fn v ->
-      Regex.replace(~r/(\w+)\s+(\w+)\[(\d+)\]/, v, "\\1 **\\2")
-      |> String.replace(";", "")
-      |> Kernel.<>(" = (float **)malloc(#{s_var} * sizeof(float *));")
-      end)
-    }
+    #{generate_shared_vars_alloc(shared_vars, s_var)}
 
     Dim3 blockIdx;
     Dim3 threadIdx;
 
-    #{
-      if shared do
-      "int bid = 0;"
-      end
-    }
+    #{if shared, do: "int bid = 0;"}
     int tid = 0;
     \n
     """
@@ -184,7 +178,7 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_kernel_simulation_loop(body, grid_dimension, block_dimension, shared, s_vars) do
+  defp generate_kernel_simulation_loop(body, grid_dimension, block_dimension, shared, s_vars) do
     thread_loop = body
     |> generate_simulation_loop(block_dimension, "threadIdx", "blockDim")
     |> Kernel.<>(generate_pthread_join())
@@ -244,7 +238,8 @@ defmodule GPotion.CBackend do
       |> Kernel.<>(generate_pthread_free())
       |> Kernel.<>(generate_destroy_barrier_variable())
 
-      generate_thread_structure(param_s_list)
+      generate_dim3_structure()
+      <> generate_thread_structure(param_s_list)
       <> generate_pthread_barrier()
       <> generate_thread_function(param_s_list, code)
       <> generate_function_call(fname, param_list, c_body)
@@ -255,19 +250,20 @@ defmodule GPotion.CBackend do
       |> Kernel.<>(generate_kernel_simulation_loop(p_call, grid_dimension, block_dimension, false, []))
       |> Kernel.<>(generate_pthread_free())
 
-      generate_thread_structure(param_list)
+      generate_dim3_structure()
+      <> generate_thread_structure(param_list)
       <> generate_thread_function(param_list, code)
       <> generate_function_call(fname, param_list, c_body)
     end
   end
 
-  def generate_pthread_barrier() do
+  defp generate_pthread_barrier() do
     """
     pthread_barrier_t barrier;\n
     """
   end
 
-  def generate_init_barrier_variable() do
+  defp generate_init_barrier_variable() do
     """
     if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
       fprintf(stderr, "Error initializing barrier\\n");
@@ -276,7 +272,7 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_init_thread_variable() do
+  defp generate_init_thread_variable() do
     """
     if (threads == NULL) {
       fprintf(stderr, "Error allocating memory for threads\\n");
@@ -285,7 +281,7 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_init_thread_data_variable() do
+  defp generate_init_thread_data_variable() do
     """
     if (threadData == NULL) {
       fprintf(stderr, "Error allocating memory for thread data\\n");
@@ -294,20 +290,20 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_destroy_barrier_variable() do
+  defp generate_destroy_barrier_variable() do
     """
     \npthread_barrier_destroy(&barrier);\n
     """
   end
 
-  def generate_pthread_free() do
+  defp generate_pthread_free() do
     """
     \nfree(threads);
     free(threadData);
     """
   end
 
-  def generate_free_shared_vars(s_vars, g_dim) do
+  defp generate_free_shared_vars(s_vars, g_dim) do
     size = case g_dim do
       0 -> ""
       1 -> "gridDim.x"
@@ -336,7 +332,7 @@ defmodule GPotion.CBackend do
 
   end
 
-  def generate_pthread_call(s_vars, para, shared) do
+  defp generate_pthread_call(s_vars, para, shared) do
     """
     threadData[tid] = (ThreadData){
       #{if shared do
@@ -368,7 +364,7 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_pthread_join() do
+  defp generate_pthread_join() do
     """
     for (int i = tid - numThreads; i < tid; ++i) {
       pthread_join(threads[i], NULL);
@@ -377,19 +373,10 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_alloc_check(var) do
-    """
-    if (#{var} == NULL) {
-      fprintf(stderr, \"Error allocating memory!\");
-      exit(1);
-    }
-    """
-  end
-
-  def generate_body({:__block__, pos, code}), do: generate_block({:__block__, pos, code})
-  def generate_body({:do, {:__block__, pos, code}}), do: generate_block({:__block__, pos, code})
-  def generate_body({:do, exp}), do: generate_command(exp)
-  def generate_body(body), do: generate_command(body)
+  defp generate_body({:__block__, pos, code}), do: generate_block({:__block__, pos, code})
+  defp generate_body({:do, {:__block__, pos, code}}), do: generate_block({:__block__, pos, code})
+  defp generate_body({:do, exp}), do: generate_command(exp)
+  defp generate_body(body), do: generate_command(body)
 
   defp generate_block({:__block__, _, code}) do
     code
@@ -475,7 +462,7 @@ defmodule GPotion.CBackend do
 
   defp generate_then([bexp, [do: then]]), do: "if(#{generate_expression bexp})\n" <> "{\n" <> (generate_body then) <> "\n}\n"
 
-  def generate_dim3_structure() do
+  defp generate_dim3_structure() do
     """
     typedef struct dim3 {
       int x;
@@ -485,7 +472,7 @@ defmodule GPotion.CBackend do
     """
   end
 
-  def generate_thread_structure(param_list) do
+  defp generate_thread_structure(param_list) do
     """
     typedef struct {
       #{p = String.replace(param_list, ",", ";\n")
@@ -502,7 +489,7 @@ defmodule GPotion.CBackend do
     generate_header(kname) <> generate_arguments(nargs, types) <> generate_call(kname, nargs)
   end
 
-  def generate_header(fname) do
+  defp generate_header(fname) do
     "void #{fname}_call(ErlNifEnv *env, const ERL_NIF_TERM argv[], ErlNifResourceType* type)
     {
 
@@ -545,24 +532,24 @@ defmodule GPotion.CBackend do
     "
   end
 
-  def generate_call(kernelname,nargs) do
+  defp generate_call(kernelname,nargs) do
     "   #{kernelname}" <> generate_call_arguments(nargs) <> ";
     }
     "
   end
 
-  def generate_call_arguments(nargs), do: "(" <> generate_call_arguments_(nargs - 1) <>"arg#{nargs}, gridDim, blockDim)"
-  def generate_call_arguments_(0), do: ""
-  def generate_call_arguments_(n), do: generate_call_arguments_(n - 1) <> "arg#{n},"
+  defp generate_call_arguments(nargs), do: "(" <> generate_call_arguments_(nargs - 1) <>"arg#{nargs}, gridDim, blockDim)"
+  defp generate_call_arguments_(0), do: ""
+  defp generate_call_arguments_(n), do: generate_call_arguments_(n - 1) <> "arg#{n},"
 
-  def generate_arguments(0, _l), do: ""
-  def generate_arguments(n, []), do: generate_arguments(n - 1, []) <> generate_matrix_argument(n)
-  def generate_arguments(n, [:matrex | t]), do: generate_arguments(n - 1, t) <> generate_matrix_argument(n)
-  def generate_arguments(n, [:int | t]), do: generate_arguments(n - 1, t) <> generate_integer_argument(n)
-  def generate_arguments(n, [:float | t]), do: generate_arguments(n - 1, t) <> generate_float_argument(n)
-  def generate_arguments(n, [:double | t]), do: generate_arguments(n - 1, t) <> generate_double_argument(n)
+  defp generate_arguments(0, _l), do: ""
+  defp generate_arguments(n, []), do: generate_arguments(n - 1, []) <> generate_matrix_argument(n)
+  defp generate_arguments(n, [:matrex | t]), do: generate_arguments(n - 1, t) <> generate_matrix_argument(n)
+  defp generate_arguments(n, [:int | t]), do: generate_arguments(n - 1, t) <> generate_integer_argument(n)
+  defp generate_arguments(n, [:float | t]), do: generate_arguments(n - 1, t) <> generate_float_argument(n)
+  defp generate_arguments(n, [:double | t]), do: generate_arguments(n - 1, t) <> generate_double_argument(n)
 
-  def generate_matrix_argument(narg) do
+  defp generate_matrix_argument(narg) do
     "  enif_get_list_cell(env,list,&head,&tail);
       enif_get_resource(env, head, type, (void **) &array_res);
       float *arg#{narg} = *array_res;
@@ -570,7 +557,7 @@ defmodule GPotion.CBackend do
     "
   end
 
-  def generate_integer_argument(narg) do
+  defp generate_integer_argument(narg) do
     "  enif_get_list_cell(env,list,&head,&tail);
       int arg#{narg};
       enif_get_int(env, head, &arg#{narg});
@@ -578,7 +565,7 @@ defmodule GPotion.CBackend do
     "
   end
 
-  def generate_float_argument(narg) do
+  defp generate_float_argument(narg) do
     "  enif_get_list_cell(env,list,&head,&tail);
       double darg#{narg};
       float arg#{narg};
@@ -588,7 +575,7 @@ defmodule GPotion.CBackend do
     "
   end
 
-  def generate_double_argument(narg) do
+  defp generate_double_argument(narg) do
     "  enif_get_list_cell(env,list,&head,&tail);
       double arg#{narg};
       enif_get_double(env, head, &darg#{narg});
@@ -596,7 +583,7 @@ defmodule GPotion.CBackend do
     "
   end
 
-  def types_server(used, types, is_typed) do
+  defp types_server(used, types, is_typed) do
     if (is_typed) do
       receive do
         {:check_var, _var, pid} ->

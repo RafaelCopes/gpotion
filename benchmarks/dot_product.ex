@@ -62,4 +62,4 @@ s = Matrex.sum(resultreal)
 next = System.monotonic_time()
 
 IO.puts "GPotion\t#{n}\t#{System.convert_time_unit(next-prev,:native,:millisecond)}"
-IO.puts "FINAL RESULTADO: #{s}"
+IO.puts "RESULTADO: #{s}"

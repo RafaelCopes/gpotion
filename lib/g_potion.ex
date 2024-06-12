@@ -27,7 +27,7 @@ defmodule GPotion do
   end
 
   defmacro gpotion(header, do: body) do
-   {fname, comp_info, para} = header
+   {fname, _comp_info, para} = header
 
     caller_st = __CALLER__
     module_name = to_string caller_st.module
@@ -62,10 +62,9 @@ defmodule GPotion do
    access_func = GPotion.CBackend.generate_access_function(fname, length(types_para), Enum.reverse(types_para))
    #IO.inspect(access_func)
 
-
    #accessfunc = GPotion.CudaBackend.gen_kernel_call(fname,length(types_para),Enum.reverse(types_para))
    file = File.open!("c_src/#{module_name}.c", [:write])
-   IO.write(file, "#include \"erl_nif.h\"\n#include <pthread.h>\n\n" <> GPotion.CBackend.generate_dim3_structure() <> k <> "\n\n" <> access_func)
+   IO.write(file, "#include \"erl_nif.h\"\n#include <pthread.h>\n\n" <> k <> "\n\n" <> access_func)
    File.close(file)
 
    format_c_code("c_src/#{module_name}.c")
